@@ -4,15 +4,13 @@ Odyssey: per-segment extras for the preference-aware router (Phase 2).
 
 path_segments.json (17 MB) is left untouched. This script writes one small
 extra file keyed by segment id, holding facts the questionnaire's preferences
-need and the main pipeline does not export:
+need and the main pipeline does not export (surface, incline and cover already
+come from path_segments.json):
 
   g   fraction (0-1) of the segment's length inside a mapped green space
       (basemap.geojson, kind "green": parks, commons, woods, gardens,
       cemeteries, allotments, grass). Sampled every ~10 m. Holes in
       multipolygons are not modelled.
-  su  surface class from the OSM `surface` tag (and `smoothness`):
-      "p" paved, "u" unpaved or uneven (dirt, grass, gravel, compacted, sand,
-      cobblestone, sett, bad smoothness, ...). Absent = surface not mapped.
   up  1 = pedestrian-type way mapped as an underpass (tunnel=yes/culvert).
   ps  1 = pedestrian-type way mapped as an enclosed passage
       (tunnel=building_passage/covered or covered=yes).
@@ -38,12 +36,6 @@ import argparse, gzip, json, math, os, shutil
 from collections import defaultdict
 
 PATH_TYPES = ("footway", "path", "cycleway", "steps", "pedestrian")
-UNPAVED = {"unpaved", "dirt", "earth", "ground", "grass", "gravel", "fine_gravel", "compacted",
-           "sand", "mud", "pebblestone", "woodchips", "grass_paver", "cobblestone",
-           "unhewn_cobblestone", "sett", "rock", "clay", "salt"}
-PAVED = {"paved", "asphalt", "concrete", "concrete:plates", "concrete:lanes", "paving_stones",
-         "bricks", "brick", "metal", "wood", "rubber", "tartan", "acrylic", "chipseal"}
-BAD_SMOOTHNESS = {"bad", "very_bad", "horrible", "very_horrible", "impassable"}
 NEAR_MAIN_M = 15.0
 SAMPLE_M = 10.0
 
@@ -128,16 +120,6 @@ class MainRoads:
         return False
 
 
-def surface_class(tags):
-    su = (tags.get("surface") or "").lower()
-    sm = (tags.get("smoothness") or "").lower()
-    if su in UNPAVED or sm in BAD_SMOOTHNESS:
-        return "u"
-    if su in PAVED:
-        return "p"
-    return None
-
-
 def shared_class(hw, tags):
     foot, bike, seg = tags.get("foot"), tags.get("bicycle"), tags.get("segregated")
     ok = ("designated", "yes", "permissive")
@@ -175,9 +157,6 @@ def main():
             frac = sum(1 for p in pts if greens.contains(p[0], p[1])) / len(pts)
             if frac > 0:
                 e["g"] = round(frac, 2)
-            su = surface_class(tags)
-            if su:
-                e["su"] = su
         if hw in PATH_TYPES:
             tun = tags.get("tunnel")
             if tun in ("yes", "culvert"):

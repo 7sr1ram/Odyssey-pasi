@@ -8,8 +8,9 @@ http://localhost:8000. No backend, no accounts, no keys.
   scored). Click a segment for lighting, real Police UK crime history
   (categories + months), isolation, tide exposure, and sources.
 - **Route preferences:** one question, "What matters on this walk?", made of
-  on/off buttons (lighting, no stairs, parks, main or quiet streets, fewer
-  turns, recorded crime, and more). On = the planner takes it into account.
+  on/off buttons (lighting, no stairs, parks, unpaved surfaces, slopes, covered
+  routes, main or quiet streets, fewer turns, recorded crime, and more). On =
+  the planner takes it into account.
   Saved on the device only (`prefs.js`, `questionnaire.js`); change it any
   time with the ⚙ button. "No stairs" is strict, the rest are preferences,
   and buttons marked "Coming soon" are saved but not used yet.
@@ -18,15 +19,17 @@ http://localhost:8000. No backend, no accounts, no keys.
   your extra-time limit. Each card has a match list built from the metres
   actually walked (matched / partly / unknown / not met), so it can't
   overclaim. Recorded crime is shown as info and only changes ranking when its
-  button is on. Needs `data/segment_extras.json` (parks, surfaces, shared
-  paths, underpasses, main-road distance); without it those buttons find nothing.
+  button is on. Surface, incline and cover come from `path_segments.json`;
+  `data/segment_extras.json` adds parks, shared paths, underpasses and
+  main-road distance (without it those buttons find nothing). Incline and cover
+  are mapped on very few paths, and the cards say so.
 - **Ride suggestion:** long walks, late-night walks with little confirmed
   lighting, or a route with a lot of the highest recorded-crime band show a
   neutral banner that opens a sheet: Uber (trip pre-filled), Bolt (site only,
   no public pre-fill link) and a share link (`rides.js`). No keys or server.
 - **Live:** the panel fetches the real-time Environment Agency tide gauge at
   Woolston and active flood warnings directly in your browser.
-- **Handoff:** one tap opens the exact route in Google Maps with waypoints.
+- **Handoff:** one tap opens a single continuous route in Google Maps (origin to destination, walking) — no intermediate stops.
 - **SOS:** 999 / 101 dial buttons, copy-my-location, official guidance links.
 - **Tests:** `node test_plan.js` checks the planner (all 45 preset pairs under
   20 button combinations), the preferences and the ride rules; run both from

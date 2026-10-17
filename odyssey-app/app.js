@@ -220,24 +220,26 @@ const LIMIT_FACTORS = [1, 0.5, 0.2, 0];    // preference strength tried against 
 const SAME_MAX = 0.1;        // routes closer than this (share of metres not shared) count as the same
 const DISTINCT_MIN = 0.2;    // an Alternative must differ from the others by at least this
 const DEFAULT_EXTRA_MIN = 10;
-const SOFT_STRENGTH = { lit: 1, parks: 1, unpaved: 1, traffic: 0.8, shared: 0.8,
+const SOFT_STRENGTH = { lit: 1, parks: 1, unpaved: 1, slopes: 1, sheltered: 0.4, traffic: 0.8, shared: 0.8,
                         underpass: 1, passage: 1, main: 0.8, quiet: 0.8, nightlife: 1 };
 // Buttons the questionnaire shows as "Coming soon": saved, but nothing applies them.
 // (Keep in step with prefs.js.)
-const SOON_IDS = ["slopes", "narrow", "crossings", "kerbs", "rest", "staffed", "busy", "isolated"];
+const SOON_IDS = ["narrow", "crossings", "kerbs", "rest", "staffed", "busy", "isolated"];
 /* All route names live here, so changing the wording is one edit. */
 const ROUTE_LABELS = { best: "Best match", fastest: "Fastest", alt: "Alternative",
                        both: "Best match · also the fastest" };
 // used only when the caller doesn't pass opts.labels (the questionnaire's own labels)
-const LABEL_FALLBACK = { lit: "Well-lit (confirmed lighting)", stairs: "No stairs", unpaved: "Avoid unpaved or uneven surfaces",
+const LABEL_FALLBACK = { lit: "Well-lit (confirmed lighting)", stairs: "No stairs", unpaved: "Avoid unpaved surfaces",
+  slopes: "Avoid steep slopes", sheltered: "Prefer sheltered or covered routes",
   parks: "Avoid parks and green spaces", main: "Stay on main streets", quiet: "Stay on quiet side streets",
   traffic: "Avoid paths beside busy roads", shared: "Avoid shared walking and cycling paths",
   underpass: "Avoid underpasses", passage: "Avoid enclosed passages", nightlife: "Avoid nightlife areas",
   crime: "Avoid streets with more recorded crime", shorter: "Shorter walk", further: "Happy to go further",
   turns: "Fewer turns, simpler route" };
 
-/* Facts about one segment that preferences care about. x = its entry in
- * segment_extras.json (may be undefined). */
+/* Facts about one segment that preferences care about. s.surface, s.steep and
+ * s.covered come from path_segments.json (null = not mapped); x = the segment's
+ * entry in segment_extras.json (may be undefined). */
 function segmentAttrs(s, x) {
   const hw = s.highway_type;
   const lit = s.lighting === "no" ? "no"
@@ -249,7 +251,11 @@ function segmentAttrs(s, x) {
     steps: hw === "steps",
     lit,                                          // confirmed | assumed | unknown | no
     park: x.g || 0,                               // share of the segment inside mapped green space
-    unpaved: x.su === "u" ? true : x.su === "p" ? false : null,   // null = surface not mapped
+    unpaved: s.surface === "unpaved" ? true : s.surface === "paved" ? false : null,   // null = surface not mapped
+    // "steep" in the data also flags most stairs (OSM puts up/down tags on steps);
+    // stairs have their own button, so slopes here means non-stair paths only.
+    steep: s.steep === true && hw !== "steps",
+    covered: s.covered === true,                  // mapped as covered, or a tunnel
     underpass: !!x.up, passage: !!x.ps, shared: x.sh || 0,        // shared: 1 = shared, 2 = segregated
     mainRoad: !!x.mr, crossing: !!x.cx,
     nightlife: s.nightlife_venues_250m || 0,
@@ -299,6 +305,8 @@ function buildCostTable(graph, w, f) {
     if (S.lit) add += S.lit * (a.lit === "confirmed" ? 0 : a.lit === "assumed" ? 0.5 : a.lit === "unknown" ? 0.6 : 1);
     if (S.parks) add += S.parks * a.park;
     if (S.unpaved && a.unpaved === true) add += S.unpaved;
+    if (S.slopes && a.steep) add += S.slopes;
+    if (S.sheltered && !a.covered) add += S.sheltered;    // covered stretches become the cheaper ones
     if (S.traffic && a.mainRoad) add += S.traffic;
     if (S.shared && a.shared) add += S.shared * (a.shared === 2 ? 0.5 : 1);
     if (S.underpass && a.underpass) add += S.underpass;
@@ -409,7 +417,7 @@ function analyseRoute(graph, route) {
   const m = { lenM: route.chainLen, minutes: minutesOf(route),
     cls: { main: 0, side: 0, path: 0, service: 0 }, lit: { confirmed: 0, assumed: 0, unknown: 0, no: 0 },
     band: { low: 0, medium: 0, high: 0, unknown: 0 },
-    parkM: 0, stairsSegs: 0, stairsM: 0, unpavedM: 0, surfaceKnownM: 0, underpassM: 0, passageM: 0,
+    parkM: 0, stairsSegs: 0, stairsM: 0, unpavedM: 0, surfaceKnownM: 0, steepM: 0, coveredM: 0, underpassM: 0, passageM: 0,
     sharedM: 0, mainRoadM: 0, nightlifeM: 0, tideM: 0, crossings: 0,
     turns: countTurns(graph, route.steps), crime90: 0, crimeTop: null };
   const seen = new Set();
@@ -418,6 +426,8 @@ function analyseRoute(graph, route) {
     m.cls[a.cls] += L; m.lit[a.lit] += L; m.band[seg.risk_band] += L; m.parkM += L * a.park;
     if (a.steps) m.stairsM += L;
     if (a.unpaved !== null) { m.surfaceKnownM += L; if (a.unpaved) m.unpavedM += L; }
+    if (a.steep) m.steepM += L;
+    if (a.covered) m.coveredM += L;
     if (a.underpass) m.underpassM += L;
     if (a.passage) m.passageM += L;
     if (a.shared) m.sharedM += L;
@@ -466,6 +476,15 @@ function buildReport(on, m, fm, ctx) {
     if (m.unpavedM >= 5) add("unpaved", m.unpavedM / L >= 0.1 ? "missed" : "partly", `${mn(m.unpavedM)} m is mapped as unpaved or uneven.`);
     else if (known < 0.5) add("unpaved", "unknown", `Surface isn't mapped for most of this route (known for ${pc(known)}).`);
     else add("unpaved", "matched", `No unpaved surface mapped (surface known for ${pc(known)}).`);
+  }
+  if (on.slopes) {
+    // slopes are mapped on very few paths, so "none found" is unknown rather than a clean pass
+    if (m.steepM >= 5) add("slopes", m.steepM / L >= 0.1 ? "missed" : "partly", `${mn(m.steepM)} m has a mapped incline.`);
+    else add("slopes", "unknown", "No mapped incline on this route, but slopes are mapped on very few paths (about 2%).");
+  }
+  if (on.sheltered) {
+    if (m.coveredM >= 20) add("sheltered", m.coveredM / L >= 0.2 ? "matched" : "partly", `${mn(m.coveredM)} m is under mapped cover (covered or a tunnel).`);
+    else add("sheltered", "unknown", "No covered section mapped on this route. Very little cover is mapped.");
   }
   if (on.parks) {
     const share = m.parkM / L;
@@ -676,25 +695,28 @@ function explain(route, altRoutes, crimes, havens, label) {
   return parts.slice(0, 5).join(" ");
 }
 
-function gmapsUrl(route, origin, dest, graph) {
-  const pts = [graph.nodes.get(route.steps[0].from).c]
-    .concat(route.steps.map(st => graph.nodes.get(st.to).c));
-  const step = Math.max(1, Math.floor(pts.length / 8));
-  const wps = pts.filter((_, i) => i % step === 0).slice(1, -1)
-    .map(c => `${c[0].toFixed(5)},${c[1].toFixed(5)}`).join("|");
+/* Google Maps handoff (from the original project): origin and destination only,
+ * travelmode=walking. Google draws one continuous route with no intermediate
+ * stops; our chosen path stays visible in the app. Pass origin/dest ([lat, lng])
+ * to use the person's real start and destination; otherwise the route's own
+ * first and last points are used. */
+function routeToGmapsUrl(graph, route, origin, dest) {
+  const first = origin || graph.nodes.get(route.steps[0].from).c;
+  const last = dest || graph.nodes.get(route.steps[route.steps.length - 1].to).c;
+  const ll = c => `${c[0].toFixed(5)},${c[1].toFixed(5)}`;
   const q = new URLSearchParams({
-    api: "1", origin: `${origin[0]},${origin[1]}`,
-    destination: `${dest[0]},${dest[1]}`, travelmode: "walking",
+    api: 1, origin: ll(first), destination: ll(last), travelmode: "walking",
   });
-  if (wps) q.set("waypoints", wps);
   return "https://www.google.com/maps/dir/?" + q.toString();
 }
+// older call shape, kept so existing callers keep working
+const gmapsUrl = (route, origin, dest, graph) => routeToGmapsUrl(graph, route, origin, dest);
 
 /* ----------------------------- exports -------------------------------- */
 if (typeof module !== "undefined") {
   module.exports = { buildGraph, snap, findRoute, routeStats, explain,
                      gmapsUrl, distM, PRESETS, PROFILES, MAX_EXTRA_MIN,
-                     planTriad, attachExtras, segmentAttrs, buildWeights, buildCostTable,
+                     planTriad, routeToGmapsUrl, etaTime, attachExtras, segmentAttrs, buildWeights, buildCostTable,
                      searchRoute, analyseRoute, buildReport, planRoutes, routeDistance,
                      countTurns, ROUTE_LABELS, SOON_IDS, DEFAULT_EXTRA_MIN };
 }
@@ -702,7 +724,9 @@ if (typeof module !== "undefined") {
 /* ============================ browser UI =============================== */
 if (typeof document !== "undefined") (async function () {
   const $ = (id) => document.getElementById(id);
-  const load = (p) => fetch(p).then(r => r.json());
+  // "no-cache" = always check with the server (a cheap 304 if unchanged), so a
+  // browser never keeps showing an older data build after the data is updated
+  const load = (p) => fetch(p, { cache: "no-cache" }).then(r => r.json());
   const [segments, crimes, havens, model, liveSnapshot, manifest, basemap, extras] = await Promise.all([
     load("data/path_segments.json"), load("data/incidents.json"),
     load("data/safe_havens.json"), load("data/model.json").catch(() => null),

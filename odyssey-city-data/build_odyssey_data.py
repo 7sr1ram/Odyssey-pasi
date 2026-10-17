@@ -256,6 +256,40 @@ def footfall_of(hw):
             "cycleway": "low", "footway": "low", "path": "low",
             "steps": "low", "service": "low"}[hw]
 
+PAVED_SURFACES = {"asphalt", "concrete", "paved", "concrete:lanes", "chipseal",
+                  "metal", "paving_stones", "sett", "unhewn_cobblestone",
+                  "cobblestone", "brick"}
+UNPAVED_SURFACES = {"unpaved", "gravel", "fine_gravel", "dirt", "ground",
+                    "grass", "mud", "sand", "compacted", "pebblestone",
+                    "wood", "woodchips", "rock", "stone", "shells"}
+
+def surface_of(tags):
+    s = tags.get("surface", "").split(";")[0].strip().lower()
+    if s in PAVED_SURFACES:
+        return "paved"
+    if s in UNPAVED_SURFACES:
+        return "unpaved"
+    return None                          # honest unknown, not guessed
+
+def steep_of(tags):
+    inc = tags.get("incline", "").strip().lower()
+    if not inc:
+        return None
+    if inc in ("up", "down", "steep"):
+        return True
+    try:
+        return abs(float(inc.rstrip("%"))) >= 8.0
+    except ValueError:
+        return None
+
+def covered_of(tags):
+    if tags.get("covered") == "yes" or tags.get("tunnel") == "yes" \
+            or tags.get("highway") == "covered":
+        return True
+    if tags.get("covered") == "no":
+        return False
+    return None
+
 def build_segments(ways, args, nightlife):
     venues = []
     for e in nightlife.get("elements", []):
@@ -280,6 +314,9 @@ def build_segments(ways, args, nightlife):
         tags = w["tags"]
         hw = tags.get("highway", "path")
         lighting, lit_note = lighting_of(tags)
+        surface = surface_of(tags)
+        steep = steep_of(tags)
+        covered = covered_of(tags)
         mid = coords[len(coords)//2]
         tide = min(min_dist_point_to_polyline(mid, poly) for poly in WATER) \
             <= TIDE_EXPOSURE_M
@@ -296,6 +333,9 @@ def build_segments(ways, args, nightlife):
                                 else lit_note or "no OSM lit tag"),
             "isolation_score": isolation_of(hw, lighting),
             "tide_exposed": tide,
+            "surface": surface,          # paved / unpaved / None=unknown
+            "steep": steep,              # True / False / None=unknown
+            "covered": covered,          # True / False / None=unknown
             "footfall": footfall_of(hw),
             "nightlife_venues_250m": n_night,
             "dist_to_centre_m": int(dist_m(mid, centre)),
@@ -449,16 +489,18 @@ def fetch_ukho_tides():
         return None
 
 # ---------------------------------------------------------------- Athena model
+# Crime prediction only. Preference-related attributes (lighting, isolation,
+# tide exposure, haven proximity, terrain) are deliberately NOT features:
+# they belong in the router as user-preference multipliers, not in the model.
+REMOVED_FEATURES = ["lit_no", "lit_partial", "lit_unknown", "isolation",
+                    "tide_exposed", "haven_300m"]
 FEATURES_STATIC = ["log_len", "is_footway", "is_path", "is_steps", "is_service",
     "is_residential", "is_main", "is_pedestrian", "is_cycleway",
-    "lit_no", "lit_partial", "lit_unknown", "isolation", "tide_exposed",
-    "nightlife_250m", "log_dist_centre", "haven_300m"]
+    "nightlife_250m", "log_dist_centre"]
 FEATURES_LAG = ["log1p_lag1", "log1p_lag2"]
 
-def seg_features(s, havens, lag1=0, lag2=0):
+def seg_features(s, lag1=0, lag2=0):
     hw = s["highway_type"]
-    mid = s["coordinates"][len(s["coordinates"])//2]
-    haven = any(dist_m((h["lat"], h["lng"]), mid) <= 300 for h in havens)
     return {
         "log_len": math.log1p(s["length_m"]),
         "is_footway": hw == "footway", "is_path": hw == "path",
@@ -466,14 +508,8 @@ def seg_features(s, havens, lag1=0, lag2=0):
         "is_residential": hw == "residential",
         "is_main": hw in ("primary", "secondary", "tertiary"),
         "is_pedestrian": hw == "pedestrian", "is_cycleway": hw == "cycleway",
-        "lit_no": s["lighting"] == "no",
-        "lit_partial": s["lighting"] == "partial",
-        "lit_unknown": s["lighting"] == "unknown",
-        "isolation": s["isolation_score"] / 10.0,
-        "tide_exposed": s["tide_exposed"],
         "nightlife_250m": min(1.0, s["nightlife_venues_250m"] / 10.0),
         "log_dist_centre": math.log1p(s["dist_to_centre_m"]) / 10.0,
-        "haven_300m": haven,
         "log1p_lag1": math.log1p(lag1),
         "log1p_lag2": math.log1p(lag2),
     }
@@ -537,6 +573,18 @@ def train_model(segs, per_month, havens, months, offline):
     def count(s, m):
         return per_month.get(s["id"], {}).get(m, 0)
 
+    def old_extras(s):
+        mid = s["coordinates"][len(s["coordinates"])//2]
+        haven = any(dist_m((h["lat"], h["lng"]), mid) <= 300 for h in havens)
+        return {
+            "lit_no": s["lighting"] == "no",
+            "lit_partial": s["lighting"] == "partial",
+            "lit_unknown": s["lighting"] == "unknown",
+            "isolation": s["isolation_score"] / 10.0,
+            "tide_exposed": s["tide_exposed"],
+            "haven_300m": haven,
+        }
+
     rows, y = [], []
     for s in scored:
         for m in train_ms:
@@ -545,7 +593,7 @@ def train_model(segs, per_month, havens, months, offline):
             lag2 = count(s, months_sorted[mi-2]) if mi >= 2 else 0
             if mi < 2:                        # need 2 lags to be comparable
                 continue
-            f = seg_features(s, havens, lag1, lag2)
+            f = seg_features(s, lag1, lag2)
             rows.append(([f[k] for k in fidx], 1 if count(s, m) > 0 else 0))
     if not rows:
         return None, None
@@ -561,21 +609,54 @@ def train_model(segs, per_month, havens, months, offline):
             r[j] = (r[j] - mean[j]) / std[j]
 
     print(f"    training rows: {len(rows)} | test month: {test_m}")
-    try:
-        import numpy as np                     # fast path if available
-        X = np.array([r for r, _ in rows]); Y = np.array([yy for _, yy in rows])
-        w = np.zeros(dim); b = 0.0
-        for _ in range(400):
-            p = 1 / (1 + np.exp(-(X @ w + b)))
-            err = p - Y
-            gw = X.T @ err / len(Y) + 0.01 * w
-            b -= float(0.5 * err.mean())
-            w -= 0.5 * gw
-        w = w.tolist()
-        path_used = "numpy"
-    except ImportError:
-        w, b = train_lr(rows, dim, 80, 2.0, 0.01)
-        path_used = "pure-python"
+
+    def fit(Xmat, Yvec):
+        """Logistic regression (L2=0.01), numpy fast path, stdlib fallback."""
+        try:
+            import numpy as np
+            Xa = np.array(Xmat); Ya = np.array(Yvec)
+            w = np.zeros(Xa.shape[1]); b = 0.0
+            for _ in range(400):
+                p = 1 / (1 + np.exp(-(Xa @ w + b)))
+                err = p - Ya
+                gw = Xa.T @ err / len(Ya) + 0.01 * w
+                b -= float(0.5 * err.mean())
+                w -= 0.5 * gw
+            return w.tolist(), b, "numpy"
+        except ImportError:
+            rr = [(list(x), yy) for x, yy in zip(Xmat, Yvec)]
+            w, b = train_lr(rr, len(Xmat[0]), 80, 2.0, 0.01)
+            return w, b, "pure-python"
+
+    # final model: crime-prediction features only
+    w, b, path_used = fit([r for r, _ in rows], [yy for _, yy in rows])
+
+    # comparison fit including the removed features, used ONLY as evidence
+    # for the removed_features block — every number comes from this fit
+    rows_w = []           # rows with segment attached (built above, refit here)
+    for s in scored:
+        for m in train_ms:
+            mi = months_sorted.index(m)
+            if mi < 2:
+                continue
+            lag1 = count(s, months_sorted[mi-1])
+            lag2 = count(s, months_sorted[mi-2])
+            f = seg_features(s, lag1, lag2)
+            ex = old_extras(s)
+            rows_w.append(([f[k] for k in fidx] + [ex[k] for k in REMOVED_FEATURES],
+                           1 if count(s, m) > 0 else 0))
+    n_w = len(rows_w)
+    dim_w = len(fidx) + len(REMOVED_FEATURES)
+    mean_w = [sum(r[0][j] for r in rows_w) / n_w for j in range(dim_w)]
+    std_w = [math.sqrt(sum((r[0][j] - mean_w[j]) ** 2 for r in rows_w) / n_w) or 1
+             for j in range(dim_w)]
+    for r in rows_w:
+        for j in range(dim_w):
+            r[0][j] = (r[0][j] - mean_w[j]) / std_w[j]
+    w_old, _, _ = fit([r for r, _ in rows_w], [yy for _, yy in rows_w])
+    removed_coefs = {k: round(c, 4) for k, c in
+                     zip(REMOVED_FEATURES, w_old[-len(REMOVED_FEATURES):])}
+    print("    comparison-fit coefficients for removed features:", removed_coefs)
 
     # evaluate on the held-out month
     pairs_m, pairs_b = [], []
@@ -584,7 +665,7 @@ def train_model(segs, per_month, havens, months, offline):
         if mi < 2:
             continue
         lag1, lag2 = count(s, months_sorted[mi-1]), count(s, months_sorted[mi-2])
-        f = seg_features(s, havens, lag1, lag2)
+        f = seg_features(s, lag1, lag2)
         x = [(f[k] - mean[j]) / std[j] for j, k in enumerate(fidx)]
         z = b + sum(wj * xj for wj, xj in zip(w, x))
         y = 1 if count(s, test_m) > 0 else 0
@@ -598,7 +679,7 @@ def train_model(segs, per_month, havens, months, offline):
     for s in scored:
         lag1 = count(s, months_sorted[-1])
         lag2 = count(s, months_sorted[-2])
-        f = seg_features(s, havens, lag1, lag2)
+        f = seg_features(s, lag1, lag2)
         x = [(f[k] - mean[j]) / std[j] for j, k in enumerate(fidx)]
         preds[s["id"]] = round(logistic(b + sum(wj * xj for wj, xj in zip(w, x))), 4)
 
@@ -607,12 +688,20 @@ def train_model(segs, per_month, havens, months, offline):
     hi_cut = vals[int(0.90 * (len(vals)-1))]
     med_cut = vals[int(0.75 * (len(vals)-1))]
 
+    coef = {k: round(v, 4) for k, v in zip(fidx, w)}
+    # the app renders non-service segments >= 10 m; quote coverage on that set
+    rendered = [s for s in segs
+               if s["highway_type"] != "service" and s["length_m"] >= 10]
+    total_segs = len(rendered) or len(segs)
+    unknown_l = sum(1 for s in rendered if s["lighting"] == "unknown")
+    lighting_unknown_pct = 100.0 * unknown_l / total_segs if total_segs else 0
+
     model = {
         "name": "Athena street-crime risk model",
         "type": "logistic regression (L2, standardised features)",
         "implementation": path_used,
         "features": fidx,
-        "coefficients": {k: round(v, 4) for k, v in zip(fidx, w)},
+        "coefficients": coef,
         "intercept": round(b, 4),
         "feature_means": {k: round(m, 3) for k, m in zip(fidx, mean)},
         "feature_stds": {k: round(s, 3) for k, s in zip(fidx, std)},
@@ -628,20 +717,76 @@ def train_model(segs, per_month, havens, months, offline):
             "base_rate_any_crime_next_month": round(base_rate, 4),
         },
         "bands": {
-            "high": f"predicted risk >= {hi_cut} (top 10% of scored segments)",
-            "medium": f"predicted risk >= {med_cut} (75th-90th percentile)",
-            "low": "below medium threshold",
+            "high": f"top 10% of scored segments by predicted risk "
+                    f"(percentile band, cut at {hi_cut})",
+            "medium": f"75th-90th percentile of scored segments "
+                      f"(cut at {med_cut})",
+            "low": "below the 75th percentile",
             "unknown": "lighting unknown -> never scored (honesty rule)",
+            "note": "bands are percentile-based on the fit's scored "
+                    "predictions, not absolute probability thresholds",
         },
-        "honesty": [
-            "Police UK street-level data has no time-of-day field; the model "
-            "predicts reported street crime generally, and lighting/isolation "
-            "features carry the night-time weighting.",
-            "Crime locations are blurred by Police UK to a nearby street point; "
-            "we snap them to the nearest walking segment within 120 m and "
-            "record the snap distance.",
-            "Segments with unknown lighting are never scored: unknown risk, "
-            "shown grey in the app.",
+        "removed_features": [
+            {"feature": "lit_no",
+             "reason": "moved to router as preference multiplier",
+             "detail": "lighting encodes the user's well-lit-roads "
+                       "preference, not crime causation; kept in the model it "
+                       "confounds preference with prediction",
+             "coefficient_in_comparison_fit": removed_coefs["lit_no"]},
+            {"feature": "lit_partial",
+             "reason": "moved to router as preference multiplier",
+             "detail": "as lit_no; also a near-empty dummy in this dataset",
+             "coefficient_in_comparison_fit": removed_coefs["lit_partial"]},
+            {"feature": "lit_unknown",
+             "reason": "moved to router as preference multiplier",
+             "detail": "unknown-lighting segments are never scored at all "
+                       "(honesty rule), so the dummy carries no signal",
+             "coefficient_in_comparison_fit": removed_coefs["lit_unknown"]},
+            {"feature": "isolation",
+             "reason": "moved to router as preference multiplier",
+             "detail": "quiet-vs-busy streets are a route preference the user "
+                       "can weigh, not a crime predictor we should bake in",
+             "coefficient_in_comparison_fit": removed_coefs["isolation"]},
+            {"feature": "tide_exposed",
+             "reason": "structurally dead",
+             "detail": "riverside exposure is rare in the crime window and "
+                       "the fitted weight is negligible; live tide data is "
+                       "shown in the app instead",
+             "coefficient_in_comparison_fit": removed_coefs["tide_exposed"]},
+            {"feature": "haven_300m",
+             "reason": "excluded before scoring",
+             "detail": "safe-haven density tracks the city centre and "
+                       "duplicates log_dist_centre (confounded); havens are "
+                       "surfaced on the map, not in the crime score",
+             "coefficient_in_comparison_fit": removed_coefs["haven_300m"]},
+        ],
+        "design_choice":
+            "Preference-related attributes (lighting, isolation, tide "
+            "exposure, haven proximity, terrain) are separated from crime "
+            "prediction so a user's preferences cannot bias the risk estimate: "
+            "the model predicts reported street crime only, and the router "
+            "applies each user's preferences as explicit edge-cost "
+            "multipliers. Risk bands are percentile-based (75th/90th "
+            "percentile of the fit's scored predictions) rather than absolute "
+            "thresholds, so bands stay comparable when the base rate moves.",
+        "known_limitations": [
+            "Time-of-day gap: Police UK street-level data has no time field, "
+            "so the model predicts reported street crime generally, not "
+            "night-time crime specifically; the night framing is carried by "
+            "the router's preferences (lighting, quiet streets), not by data.",
+            "Crime-location blurring: Police UK snaps crimes to an anonymous "
+            "nearby street point; we snap to the nearest walking segment "
+            f"within {SNAP_MAX_M:.0f} m, so segment-level counts are "
+            "approximate by construction.",
+            f"Lag-feature dominance: recent-crime history "
+            f"(log1p_lag1 coefficient {coef.get('log1p_lag1', 0)}) is the "
+            "strongest signal; where a street has no recent records the "
+            "model falls back on structure (type, length, centre distance) "
+            "and is correspondingly less certain.",
+            f"Unknown-lighting exclusion: {lighting_unknown_pct:.0f}% of "
+            "walking segments have no lighting data in OSM and are never "
+            "scored; they show as grey 'risk unknown' in the app rather "
+            "than being silently guessed.",
         ],
         "trained_at": NOW_ISO,
         "data_sources": [
@@ -729,6 +874,26 @@ def main():
                    dist_m(s["coordinates"][0], (h["lat"], h["lng"])))
         h["segment_id"] = near["id"]
         h["source"] = "curated (hours hand-checked Oct 2026)"
+
+    # preference-field coverage, computed from the real data (the app shows
+    # these numbers as footnotes in the preferences modal)
+    rendered = [s for s in segs
+                if s["highway_type"] != "service" and s["length_m"] >= 10]
+    n = len(rendered) or len(segs) or 1
+    manifest["coverage"] = {
+        "rendered_segments": len(rendered),
+        "lighting_known_pct": round(100 * sum(
+            1 for s in rendered if s["lighting"] != "unknown") / n, 1),
+        "surface_known_pct": round(100 * sum(
+            1 for s in rendered if s["surface"]) / n, 1),
+        "incline_known_pct": round(100 * sum(
+            1 for s in rendered if s["steep"] is not None) / n, 1),
+        "sheltered_known_pct": round(100 * sum(
+            1 for s in rendered if s["covered"] is not None) / n, 1),
+        "steps_segments": sum(1 for s in rendered
+                              if s["highway_type"] == "steps"),
+        "covered_segments": sum(1 for s in rendered if s["covered"]),
+    }
 
     print("7/8 live sources + outputs ...")
     live = fetch_ea_live()

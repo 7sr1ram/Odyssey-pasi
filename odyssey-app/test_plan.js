@@ -37,7 +37,8 @@ const SETS = {
   combo: { on: { lit: true, parks: true, stairs: true, traffic: true, turns: true }, extraMin: 10 },
   limit0: { on: { lit: true, parks: true }, extraMin: 0 },
   furtherCombo: { on: { further: true, parks: true, lit: true } },
-  soonOnly: { on: { slopes: true, crossings: true } },
+  soonOnly: { on: { crossings: true, kerbs: true } },
+  slopes: { on: { slopes: true } }, sheltered: { on: { sheltered: true } },
 };
 const agg = {};
 const times = [];
@@ -64,7 +65,7 @@ for (const [name, prefs] of Object.entries(SETS)) {
         check(`${tag}/${r.role}: within extra-time limit`, r.extraMin <= limit + 0.05 || exceedNote, `+${r.extraMin.toFixed(1)} min`);
       }
       if (on.stairs && r.role !== "fastest") check(`${tag}/${r.role}: no stairs`, r.metrics.stairsSegs === 0);
-      if (on.slopes) check(`${tag}/${r.role}: coming-soon is "not applied"`, r.report.some(i => i.id === "slopes" && i.status === "na"));
+      if (on.crossings) check(`${tag}/${r.role}: coming-soon is "not applied"`, r.report.some(i => i.id === "crossings" && i.status === "na"));
     }
     for (let i = 0; i < plan.routes.length; i++) for (let j = i + 1; j < plan.routes.length; j++) {
       check(`${tag}: routes differ`, core.routeDistance(plan.routes[i].route, plan.routes[j].route) >= 0.09);
@@ -76,6 +77,9 @@ for (const [name, prefs] of Object.entries(SETS)) {
     if (on.lit) cmp(best.lit.confirmed / best.lenM > fast.lit.confirmed / fast.lenM + 0.01, best.lit.confirmed / best.lenM < fast.lit.confirmed / fast.lenM - 0.01);
     if (on.crime) cmp(best.crime90 < fast.crime90, best.crime90 > fast.crime90);
     if (on.turns) cmp(best.turns < fast.turns, best.turns > fast.turns);
+    if (on.unpaved) cmp(best.unpavedM < fast.unpavedM - 1, best.unpavedM > fast.unpavedM + 1);
+    if (on.slopes) cmp(best.steepM < fast.steepM - 1, best.steepM > fast.steepM + 1);
+    if (on.sheltered) cmp(best.coveredM > fast.coveredM + 1, best.coveredM < fast.coveredM - 1);
     if (on.main) cmp(best.cls.main / best.lenM > fast.cls.main / fast.lenM + 0.01, best.cls.main / best.lenM < fast.cls.main / fast.lenM - 0.01);
   }
 }
@@ -83,10 +87,24 @@ for (const k of ["parks", "lit", "crime", "turns", "main"]) {
   check(`${k}: never worse than the fastest route`, agg[k].worse === 0, JSON.stringify(agg[k]));
   check(`${k}: improves at least one pair`, agg[k].better > 0, JSON.stringify(agg[k]));
 }
+// data is thin for these (incline and cover are mapped on very few paths), so only "never worse" is required
+for (const k of ["unpaved", "slopes", "sheltered"]) check(`${k}: never worse than the fastest route`, agg[k].worse === 0, JSON.stringify(agg[k]));
 times.sort((x, y) => x - y);
 console.log(`planRoutes: ${times.length} runs, median ${times[times.length >> 1]} ms, max ${times[times.length - 1]} ms`);
 console.log("improvement counts (better/equal/worse vs fastest, over 45 pairs):",
-  JSON.stringify(Object.fromEntries(["parks", "lit", "crime", "turns", "main"].map(k => [k, agg[k]]))));
+  JSON.stringify(Object.fromEntries(["parks", "lit", "crime", "turns", "main", "unpaved", "slopes", "sheltered"].map(k => [k, agg[k]]))));
+
+/* ---- 1b. the data fields from path_segments.json become the right attributes ---- */
+{
+  const base = { highway_type: "footway", lighting: "unknown", lighting_source: "", nightlife_venues_250m: 0 };
+  const at = (o) => core.segmentAttrs({ ...base, ...o }, undefined);
+  check("surface: unpaved / paved / unknown", at({ surface: "unpaved" }).unpaved === true && at({ surface: "paved" }).unpaved === false && at({ surface: null }).unpaved === null);
+  check("steep: a mapped incline counts on a footway", at({ steep: true }).steep === true && at({ steep: null }).steep === false);
+  check("steep: stairs are NOT also counted as slopes (they have their own button)", at({ highway_type: "steps", steep: true }).steep === false && at({ highway_type: "steps" }).steps === true);
+  check("covered: only a mapped cover counts", at({ covered: true }).covered === true && at({ covered: false }).covered === false && at({ covered: null }).covered === false);
+  const withData = (k, v) => segments.filter(x => x[k] === v).length;
+  check("data has surface, steep and covered fields", withData("surface", "unpaved") > 100 && withData("steep", true) > 100 && withData("covered", true) > 50);
+}
 
 /* ---- 2. a requirement that cannot be met says so ---- */
 {

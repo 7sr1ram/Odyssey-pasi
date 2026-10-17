@@ -8,6 +8,14 @@ const havens = JSON.parse(fs.readFileSync("data/safe_havens.json"));
 const model = JSON.parse(fs.readFileSync("data/model.json"));
 console.log(`segments: ${segments.length}, real crimes: ${crimes.length}, havens: ${havens.length}`);
 console.log(`model: AUC ${model.evaluation.auc_model} vs baseline ${model.evaluation.auc_baseline_recent_crime} (test month ${model.training.test_month})`);
+let fail = 0;
+const banned = ["lit_no","lit_partial","lit_unknown","isolation","tide_exposed","haven_300m"];
+let modelFails = 0;
+for (const f of banned) if (model.features.includes(f)) { console.log(`!! removed feature still present: ${f}`); modelFails++; }
+if (!model.removed_features || model.removed_features.length !== 6) { console.log("!! removed_features block missing/incomplete"); modelFails++; }
+for (const need of ["design_choice", "known_limitations"])
+  if (!model[need]) { console.log(`!! model card missing ${need}`); modelFails++; }
+if (modelFails) fail += modelFails;
 
 // real-data sanity
 const withCrime = segments.filter(s => s.crime_count_90d > 0);
@@ -31,7 +39,6 @@ const trips = [
   ["St Denys -> Cobden Bridge",[50.9215,-1.3905],[50.9245,-1.3780], 2.5],
   ["Shirley -> city centre",  [50.9105,-1.4325], [50.9045,-1.4025], 4.5],
 ];
-let fail = 0;
 for (const [name, from, to, maxKm] of trips) {
   console.log(`\n== ${name} ==`);
   const a = core.snap(graph, from), b = core.snap(graph, to);
@@ -64,7 +71,28 @@ for (const [name, from, to, maxKm] of trips) {
     if (!uniq.some(u => u.route.segments.map(s=>s.id).join() === r.route.segments.map(s=>s.id).join())) uniq.push(r);
   for (const r of uniq.slice(0, 2))
     console.log(`  [${r.label}] "${core.explain(r.route, uniq, crimes, havens, r.label)}"`);
-  console.log("  gmaps:", core.gmapsUrl(uniq[0].route, from, to, graph).slice(0, 90) + "…");
+  const url = core.routeToGmapsUrl(graph, uniq[0].route);
+  console.log(`  gmaps: hops=${uniq[0].route.steps.length} stops=0`, url.slice(0, 90) + "…");
+  if (url.includes("waypoints=")) { console.log("  !! waypoints present — Google would show stops"); fail++; }
+  if (!url.includes("travelmode=walking")) { console.log("  !! missing travelmode=walking"); fail++; }
+  const stops = (url.match(/%7C/g) || []).length;
+  if (stops) { console.log(`  !! ${stops} pipe-separated stops in URL`); fail++; }
 }
+// ---- route data fields used by the preference buttons ----
+console.log("\n== preference data ==");
+for (const f of ["surface", "steep", "covered"]) {
+  const missing = segments.filter(s => !(f in s)).length;
+  if (missing) { console.log(`  !! ${missing} segments lack the "${f}" field`); fail++; }
+}
+const knownPct = (f) => (100 * segments.filter(s => s[f] !== null && s[f] !== undefined).length / segments.length).toFixed(1);
+console.log(`  surface known on ${knownPct("surface")}% of segments, incline on ${knownPct("steep")}%, cover on ${knownPct("covered")}%`);
+const extras = JSON.parse(fs.readFileSync("data/segment_extras.json"));
+core.attachExtras(graph, extras);
+const stairsPlan = core.planRoutes(graph, core.snap(graph, [50.9215, -1.3905]).key, core.snap(graph, [50.9245, -1.3780]).key,
+  { on: { stairs: true } }, {});
+if (!stairsPlan.ok || stairsPlan.routes.some(r => r.role !== "fastest" && r.metrics.stairsSegs > 0)) {
+  console.log("  !! the No stairs button still lets stairs through"); fail++;
+} else console.log("  No stairs button: routes are stairs-free");
+
 console.log(fail ? `\nFAILED: ${fail} problems` : "\nALL TESTS PASSED");
 process.exit(fail ? 1 : 0);

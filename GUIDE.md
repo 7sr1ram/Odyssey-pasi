@@ -117,7 +117,7 @@ fake-precise percentages, because "87% safe" would be a lie.
 - Preset destinations or click-anywhere trip planning
 - Safest / Shortest / Balanced comparison cards
 - Plain-English explanations per route
-- One-tap handoff to Google Maps with the route as waypoints
+- One-tap handoff to Google Maps as a single continuous route (walking, no intermediate stops)
 - "Report this route" (saved on the device; with no backend it stays local,
   and the app says so)
 - SOS overlay: call 999, call 101, copy my location

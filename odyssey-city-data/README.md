@@ -34,8 +34,9 @@ python3 build_odyssey_data.py
 cp entities/*.json ../odyssey-app/data/
 ```
 
-Rebuild the per-segment extras used by the route preferences (parks, surfaces,
-shared paths, underpasses, main-road distance). It reads the raw OSM cache
+Rebuild the per-segment extras used by the route preferences (parks, shared
+paths, underpasses, main-road distance; surface, incline and cover are already
+in `path_segments.json`). It reads the raw OSM cache
 written by the step above, so run it right after; it needs no internet and
 writes `entities/segment_extras.json` and `../odyssey-app/data/segment_extras.json`:
 ```
