@@ -11,7 +11,10 @@
 <div id="app">
   <aside id="panel">
     <header>
-      <h1>Odyssey</h1>
+      <div class="head-row">
+        <h1>Odyssey</h1>
+        <button id="prefs-open" class="prefs-btn" title="Route preferences">Preferences</button>
+      </div>
       <p class="tagline">Safest walking routes at night — Southampton · navigation by Athena</p>
     </header>
 
@@ -55,6 +58,38 @@
       <button id="sos-close">Close</button>
     </div>
   </div>
+
+  <dialog id="prefs-dialog">
+    <form id="prefs-form" method="dialog">
+      <h2>Route preferences</h2>
+      <p class="pref-sub">These change which route Athena picks — they never change the crime risk shown.</p>
+
+      <label class="pref-row"><input type="checkbox" id="pref-lit" checked> Well-lit roads
+        <span class="pref-foot" id="cov-lit"></span></label>
+      <label class="pref-row"><input type="checkbox" id="pref-stairs"> Avoid stairs
+        <span class="pref-foot" id="cov-stairs"></span></label>
+      <label class="pref-row"><input type="checkbox" id="pref-steep"> Avoid steep gradients
+        <span class="pref-foot" id="cov-incline"></span>
+        <span class="pref-low hidden" data-lowcov="incline_known_pct">Unknown segments are not penalised.</span></label>
+      <label class="pref-row"><input type="checkbox" id="pref-sheltered"> Sheltered routes
+        <span class="pref-foot" id="cov-shelter"></span>
+        <span class="pref-low hidden" data-lowcov="sheltered_known_pct">Unknown segments are not penalised.</span></label>
+
+      <div class="pref-row pref-terrain">
+        <span class="pref-label">Terrain</span>
+        <label><input type="radio" name="terrain" value="paved"> Paved</label>
+        <label><input type="radio" name="terrain" value="mixed" checked> Mixed</label>
+        <label><input type="radio" name="terrain" value="any"> Any</label>
+        <span class="pref-foot" id="cov-surface"></span>
+        <span class="pref-low hidden" data-lowcov="surface_known_pct">Unknown segments are not penalised.</span>
+      </div>
+
+      <div class="pref-actions">
+        <button type="button" id="prefs-cancel" class="secondary">Cancel</button>
+        <button type="submit" id="prefs-save">Save preferences</button>
+      </div>
+    </form>
+  </dialog>
 
   <button id="sos-open" title="Emergency SOS">SOS</button>
   <div id="legend">

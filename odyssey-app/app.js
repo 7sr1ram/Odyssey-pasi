@@ -50,6 +50,52 @@ const esc = (s) => String(s).replace(/[&<>"]/g,
   (m) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[m]));
 
 /* ------------------------- graph + routing ---------------------------- */
+/* ------------------------- user preferences ----------------------------
+ * Separated from the crime model on purpose (see model.json design_choice):
+ * the model predicts reported street crime; these multipliers let the user
+ * weigh comfort attributes (lighting, stairs, terrain, shelter) when
+ * choosing between routes. Mirrored 1:1 in odyssey-city-data/preferences.py
+ * ---------------------------------------------------------------------- */
+const DEFAULT_PREFS = {
+  well_lit: true,          // penalise segments known to be unlit
+  avoid_stairs: false,     // penalise mapped steps
+  avoid_steep: false,      // penalise mapped steep inclines
+  sheltered: false,        // prefer covered/sheltered segments
+  terrain: "mixed",        // "paved" | "mixed" | "any"
+};
+function loadPrefs() {
+  try {
+    const raw = localStorage.getItem("odyssey_prefs");
+    if (!raw) return { ...DEFAULT_PREFS };
+    return { ...DEFAULT_PREFS, ...JSON.parse(raw) };
+  } catch { return { ...DEFAULT_PREFS }; }
+}
+function edgeMultiplier(seg, prefs) {
+  let m = 1;
+  if (prefs.well_lit && seg.lighting === "no") m *= 3.0;
+  if (prefs.avoid_stairs && seg.highway_type === "steps") m *= 4.0;
+  if (prefs.avoid_steep && seg.steep === true) m *= 3.0;
+  if (prefs.sheltered && seg.covered === true) m *= 0.55;
+  if (prefs.terrain === "paved" && seg.surface === "unpaved") m *= 2.5;
+  if (prefs.terrain === "mixed" && seg.surface === "unpaved") m *= 1.3;
+  return m;                       // unknown values are never penalised
+}
+function explanationFactors(segments, prefs) {
+  const has = f => segments.some(f);
+  const out = [];
+  if (prefs.well_lit)
+    out.push(has(s => s.lighting === "no") ? "unlit stretch unavoidable" : "avoided unlit");
+  if (prefs.avoid_stairs)
+    out.push(has(s => s.highway_type === "steps") ? "stairs unavoidable" : "no stairs");
+  if (prefs.avoid_steep)
+    out.push(has(s => s.steep === true) ? "steep unavoidable" : "no steep gradients");
+  if (prefs.sheltered)
+    out.push(has(s => s.covered === true) ? "sheltered stretch" : "no sheltered cover mapped");
+  if (prefs.terrain === "paved")
+    out.push(has(s => s.surface === "unpaved") ? "unpaved unavoidable" : "paved terrain");
+  return out;
+}
+
 function buildGraph(segments) {
   const nodes = new Map();
   function node(c) {
@@ -99,7 +145,7 @@ class MinHeap {
 const MAX_EXTRA_MIN = 12;   // a safer route is only offered if the detour
                             // stays within this many extra walking minutes
 
-function findRoute(graph, startKey, destKey, profile) {
+function findRoute(graph, startKey, destKey, profile, prefs) {
   const isNamed = typeof profile === "string";
   const pen = isNamed ? PROFILES[profile] : profile;
   const rw = profile.rw ?? (isNamed ? RISK_W[profile] : RISK_W.safest);
@@ -117,7 +163,8 @@ function findRoute(graph, startKey, destKey, profile) {
       const seg = graph.byId.get(e.seg);
       const cost = e.len * (1 + pen[seg.risk_band]
         + rw * (seg.risk_score ?? 0)) *
-        (seg.highway_type === "service" ? SERVICE_MULT : 1);
+        (seg.highway_type === "service" ? SERVICE_MULT : 1) *
+        edgeMultiplier(seg, prefs || DEFAULT_PREFS);
       const nd = d + cost;
       if (nd < (dist.get(e.to) ?? Infinity)) {
         dist.set(e.to, nd);
@@ -157,14 +204,15 @@ function routeStats(route) {
 
 /* Full route triad with the detour bound applied. Returns
  * { shortest, safest, safestNote, balanced } (any may be null). */
-function planTriad(graph, startKey, destKey) {
-  const shortest = findRoute(graph, startKey, destKey, "shortest");
+function planTriad(graph, startKey, destKey, prefs) {
+  const P = prefs || DEFAULT_PREFS;
+  const shortest = findRoute(graph, startKey, destKey, "shortest", P);
   const shortMin = shortest ? routeStats(shortest).minutes : 0;
   let safest = null, safestNote = "";
   for (const f of [1, 0.5, 0.25]) {
     const pen = {};
     for (const [band, p] of Object.entries(PROFILES.safest)) pen[band] = p * f;
-    const r = findRoute(graph, startKey, destKey, { ...pen, rw: RISK_W.safest * f });
+    const r = findRoute(graph, startKey, destKey, { ...pen, rw: RISK_W.safest * f }, P);
     if (!r) continue;
     safest = safest || r;
     if (routeStats(r).minutes - shortMin <= MAX_EXTRA_MIN) {
@@ -174,8 +222,8 @@ function planTriad(graph, startKey, destKey) {
       break;
     }
   }
-  const balanced = findRoute(graph, startKey, destKey, "balanced");
-  return { shortest, safest, safestNote, balanced };
+  const balanced = findRoute(graph, startKey, destKey, "balanced", P);
+  return { shortest, safest, safestNote, balanced, prefs: P };
 }
 
 function etaTime(minutes) {
@@ -254,24 +302,75 @@ function explain(route, altRoutes, crimes, havens, label) {
   return parts.slice(0, 3).join(" ");
 }
 
-function gmapsUrl(route, origin, dest, graph) {
+/* Douglas-Peucker polyline simplification (tolerance in degrees). */
+function dpSimplify(pts, tol) {
+  if (pts.length < 3) return pts.slice();
+  const keep = new Array(pts.length).fill(false);
+  keep[0] = keep[pts.length - 1] = true;
+  const stack = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [i, j] = stack.pop();
+    let maxD = -1, idx = -1;
+    const [x1, y1] = pts[i], [x2, y2] = pts[j];
+    const dx = x2 - x1, dy = y2 - y1;
+    const len2 = dx * dx + dy * dy;
+    for (let k = i + 1; k < j; k++) {
+      const [x, y] = pts[k];
+      let d;
+      if (len2 === 0) d = Math.hypot(x - x1, y - y1);
+      else {
+        const t = Math.max(0, Math.min(1, ((x - x1) * dx + (y - y1) * dy) / len2));
+        d = Math.hypot(x - (x1 + t * dx), y - (y1 + t * dy));
+      }
+      if (d > maxD) { maxD = d; idx = k; }
+    }
+    if (maxD > tol && idx > 0) {
+      keep[idx] = true;
+      stack.push([i, idx], [idx, j]);
+    }
+  }
+  return pts.filter((_, i) => keep[i]);
+}
+
+/* Google Maps URL from a Dijkstra node route: merge hops into one
+   LineString, simplify (Douglas-Peucker, 0.0003 deg), then sample
+   8 evenly spaced interior waypoints so Google follows the walked
+   path instead of inventing its own. */
+function routeToGmapsUrl(graph, route) {
   const pts = [graph.nodes.get(route.steps[0].from).c]
     .concat(route.steps.map(st => graph.nodes.get(st.to).c));
-  const step = Math.max(1, Math.floor(pts.length / 8));
-  const wps = pts.filter((_, i) => i % step === 0).slice(1, -1)
-    .map(c => `${c[0].toFixed(5)},${c[1].toFixed(5)}`).join("|");
+  // merged LineString: drop consecutive duplicates
+  const line = pts.filter((p, i) => i === 0 ||
+    p[0] !== pts[i - 1][0] || p[1] !== pts[i - 1][1]);
+  const simple = dpSimplify(line, 0.0003);
+  // cumulative length, then 8 interior samples at equal spacing
+  const cum = [0];
+  for (let i = 1; i < simple.length; i++)
+    cum.push(cum[i - 1] + distM(simple[i - 1], simple[i]));
+  const total = cum[cum.length - 1];
+  const wps = [];
+  for (let k = 1; k <= 8; k++) {
+    const target = total * k / 9;
+    let i = 1;
+    while (i < cum.length - 1 && cum[i] < target) i++;
+    wps.push(simple[i]);
+  }
+  console.debug(`[athena] gmaps: ${route.steps.length} Dijkstra hops ` +
+    `-> ${line.length} merged nodes -> ${wps.length} waypoints`);
+  const ll = c => `${c[0].toFixed(5)},${c[1].toFixed(5)}`;
   const q = new URLSearchParams({
-    api: "1", origin: `${origin[0]},${origin[1]}`,
-    destination: `${dest[0]},${dest[1]}`, travelmode: "walking",
+    api: "1", origin: ll(simple[0]), destination: ll(simple[simple.length - 1]),
+    waypoints: wps.map(ll).join("|"), travelmode: "walking",
   });
-  if (wps) q.set("waypoints", wps);
   return "https://www.google.com/maps/dir/?" + q.toString();
 }
 
 /* ----------------------------- exports -------------------------------- */
 if (typeof module !== "undefined") {
   module.exports = { buildGraph, snap, findRoute, routeStats, explain,
-                     gmapsUrl, distM, PRESETS, PROFILES, MAX_EXTRA_MIN,
+                     routeToGmapsUrl, distM, PRESETS, PROFILES, MAX_EXTRA_MIN,
+                     dpSimplify, edgeMultiplier, explanationFactors,
+                     DEFAULT_PREFS, loadPrefs,
                      planTriad };
 }
 
@@ -466,6 +565,7 @@ if (typeof document !== "undefined") (async function () {
   const graph = buildGraph(segments);
   let routeLayers = [];
   let routeLines = [], routeCards = [], selected = -1;
+  let lastPlan = null;                    // for instant re-plan after prefs change
 
   function selectRoute(idx) {
     selected = idx;
@@ -511,7 +611,8 @@ if (typeof document !== "undefined") (async function () {
       routesEl.innerHTML = "<p class='hint'>Start or destination is too far from the walking network — pick a point nearer a street or path.</p>";
       return;
     }
-    const triad = planTriad(graph, a.key, b.key);
+    const prefs = loadPrefs();
+    const triad = planTriad(graph, a.key, b.key, prefs);
     const results = [];
     if (triad.safest) results.push({ label: "Safest", profile: "safest", route: triad.safest, note: triad.safestNote });
     if (triad.shortest) results.push({ label: "Shortest", profile: "shortest", route: triad.shortest });
@@ -529,6 +630,8 @@ if (typeof document !== "undefined") (async function () {
     routesEl.innerHTML = "";
     uniq.forEach((r, idx) => {
       const st = routeStats(r.route);
+      r.route.gmaps_url = routeToGmapsUrl(graph, r.route);
+      r.route.explanation_factors = explanationFactors(r.route.segments, prefs);
       const text = [r.note, explain(r.route, uniq, crimes, havens, r.label)]
         .filter(Boolean).join(" ");
       const isBest = st.band === "low" || (idx === 0 && r.label === "Safest");
@@ -541,9 +644,12 @@ if (typeof document !== "undefined") (async function () {
         `<div class="route-meta"><b>ETA ${etaTime(st.minutes)}</b> · ${Math.round(st.minutes)} min · ${(st.len / 1000).toFixed(1)} km` +
         (st.unknownCount ? ` · ${st.unknownCount} unscored` : "") + `</div>` +
         `<p class="route-explain">${text}</p>` +
+        (r.route.explanation_factors.length ? `<div class="factor-chips">` +
+          r.route.explanation_factors.map(f => `<span class="chip">${esc(f)}</span>`).join("") +
+          `</div>` : "") +
         `<div class="route-actions">` +
         `<button class="choose" data-i="${idx}">Choose this route</button>` +
-        `<a class="gmaps" target="_blank" href="${gmapsUrl(r.route, fromLL, toLL, graph)}">Open in Google Maps</a>` +
+        `<a class="gmaps" target="_blank" href="${r.route.gmaps_url}">Open in Google Maps</a>` +
         `<button class="report" data-i="${idx}">Report this route</button></div>` +
         `<p class="report-msg hidden" id="msg-${idx}">Thanks — saved. Athena retrains on monthly Police UK data; your report is kept for the next retrain.</p>`;
       routesEl.appendChild(card);
@@ -559,6 +665,7 @@ if (typeof document !== "undefined") (async function () {
       routeLines[idx] = line;
       routeCards[idx] = card;
     });
+    lastPlan = { fromLL, toLL, destName };
     selectRoute(0);
     map.fitBounds(routeLayers[routeLayers.length - 1].getBounds(), { padding: [40, 40] });
 
@@ -617,5 +724,56 @@ if (typeof document !== "undefined") (async function () {
       () => { $("sos-location").textContent = "Location unavailable — enable GPS."; });
     $("sos-overlay").classList.remove("hidden");
   });
+  /* ---- preferences dialog (native <dialog>) ---- */
+  const dlg = $("prefs-dialog");
+  const cov = (manifest && manifest.coverage) || {};
+  const fmt = v => typeof v === "number" ? `~${Math.round(v)}% mapped` : "";
+  const footnotes = {
+    "cov-lit": cov.lighting_known_pct != null
+      ? `${fmt(cov.lighting_known_pct)} in OSM` : "",
+    "cov-stairs": `${cov.steps_segments ?? 0} mapped stair segments in OSM`,
+    "cov-incline": cov.incline_known_pct != null ? fmt(cov.incline_known_pct) : "",
+    "cov-shelter": cov.sheltered_known_pct != null ? fmt(cov.sheltered_known_pct) : "",
+    "cov-surface": cov.surface_known_pct != null ? fmt(cov.surface_known_pct) : "",
+  };
+  for (const [id, txt] of Object.entries(footnotes)) {
+    const el = $(id);
+    if (el) el.textContent = txt ? `Data coverage: ${txt}` : "";
+  }
+  // low-coverage honesty: unknown segments are never penalised
+  document.querySelectorAll("[data-lowcov]").forEach(el => {
+    const key = el.dataset.lowcov;
+    if (cov[key] != null && cov[key] < 30)
+      el.classList.remove("hidden");
+  });
+
+  function openPrefs() {
+    const p = loadPrefs();
+    $("pref-lit").checked = p.well_lit;
+    $("pref-stairs").checked = p.avoid_stairs;
+    $("pref-steep").checked = p.avoid_steep;
+    $("pref-sheltered").checked = p.sheltered;
+    for (const r of document.querySelectorAll("input[name=terrain]"))
+      r.checked = r.value === p.terrain;
+    dlg.showModal();
+  }
+  $("prefs-open").addEventListener("click", openPrefs);
+  $("prefs-cancel").addEventListener("click", () => dlg.close());
+  $("prefs-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const prefs = {
+      well_lit: $("pref-lit").checked,
+      avoid_stairs: $("pref-stairs").checked,
+      avoid_steep: $("pref-steep").checked,
+      sheltered: $("pref-sheltered").checked,
+      terrain: (document.querySelector("input[name=terrain]:checked") || {}).value || "mixed",
+    };
+    localStorage.setItem("odyssey_prefs", JSON.stringify(prefs));
+    dlg.close();
+    if (lastPlan) planRoute(lastPlan.fromLL, lastPlan.toLL, lastPlan.destName);
+  });
+  // first visit: ask for preferences before the first route
+  if (localStorage.getItem("odyssey_prefs") === null) dlg.showModal();
+
   $("sos-close").addEventListener("click", () => $("sos-overlay").classList.add("hidden"));
 })();

@@ -12,39 +12,27 @@
     "is_main",
     "is_pedestrian",
     "is_cycleway",
-    "lit_no",
-    "lit_partial",
-    "lit_unknown",
-    "isolation",
-    "tide_exposed",
     "nightlife_250m",
     "log_dist_centre",
-    "haven_300m",
     "log1p_lag1",
     "log1p_lag2"
   ],
   "coefficients": {
-    "log_len": 0.505,
-    "is_footway": -0.148,
-    "is_path": -0.0366,
-    "is_steps": -0.0352,
-    "is_service": -0.0203,
-    "is_residential": 0.3433,
-    "is_main": -0.1586,
-    "is_pedestrian": -0.0901,
-    "is_cycleway": -0.1353,
-    "lit_no": -0.0234,
-    "lit_partial": 0.0,
-    "lit_unknown": 0.0,
-    "isolation": -0.1066,
-    "tide_exposed": 0.0489,
-    "nightlife_250m": 0.0881,
-    "log_dist_centre": -0.1617,
-    "haven_300m": 0.029,
-    "log1p_lag1": 0.7598,
-    "log1p_lag2": 0.7109
+    "log_len": 0.5073,
+    "is_footway": -0.1793,
+    "is_path": -0.0552,
+    "is_steps": -0.0447,
+    "is_service": -0.0372,
+    "is_residential": 0.3605,
+    "is_main": -0.1219,
+    "is_pedestrian": -0.0857,
+    "is_cycleway": -0.1492,
+    "nightlife_250m": 0.0992,
+    "log_dist_centre": -0.1695,
+    "log1p_lag1": 0.7619,
+    "log1p_lag2": 0.7123
   },
-  "intercept": -3.6937,
+  "intercept": -3.6821,
   "feature_means": {
     "log_len": 3.78,
     "is_footway": 0.151,
@@ -55,14 +43,8 @@
     "is_main": 0.192,
     "is_pedestrian": 0.02,
     "is_cycleway": 0.098,
-    "lit_no": 0.048,
-    "lit_partial": 0.0,
-    "lit_unknown": 0.0,
-    "isolation": 0.369,
-    "tide_exposed": 0.062,
     "nightlife_250m": 0.129,
     "log_dist_centre": 0.773,
-    "haven_300m": 0.167,
     "log1p_lag1": 0.079,
     "log1p_lag2": 0.078
   },
@@ -76,14 +58,8 @@
     "is_main": 0.394,
     "is_pedestrian": 0.139,
     "is_cycleway": 0.298,
-    "lit_no": 0.213,
-    "lit_partial": 1,
-    "lit_unknown": 1,
-    "isolation": 0.182,
-    "tide_exposed": 0.241,
     "nightlife_250m": 0.221,
     "log_dist_centre": 0.081,
-    "haven_300m": 0.373,
     "log1p_lag1": 0.333,
     "log1p_lag2": 0.33
   },
@@ -104,17 +80,58 @@
     "base_rate_any_crime_next_month": 0.068
   },
   "bands": {
-    "high": "predicted risk >= 0.0693 (top 10% of scored segments)",
-    "medium": "predicted risk >= 0.0359 (75th-90th percentile)",
-    "low": "below medium threshold",
-    "unknown": "lighting unknown -> never scored (honesty rule)"
+    "high": "top 10% of scored segments by predicted risk (percentile band, cut at 0.0685)",
+    "medium": "75th-90th percentile of scored segments (cut at 0.0357)",
+    "low": "below the 75th percentile",
+    "unknown": "lighting unknown -> never scored (honesty rule)",
+    "note": "bands are percentile-based on the fit's scored predictions, not absolute probability thresholds"
   },
-  "honesty": [
-    "Police UK street-level data has no time-of-day field; the model predicts reported street crime generally, and lighting/isolation features carry the night-time weighting.",
-    "Crime locations are blurred by Police UK to a nearby street point; we snap them to the nearest walking segment within 120 m and record the snap distance.",
-    "Segments with unknown lighting are never scored: unknown risk, shown grey in the app."
+  "removed_features": [
+    {
+      "feature": "lit_no",
+      "reason": "moved to router as preference multiplier",
+      "detail": "lighting encodes the user's well-lit-roads preference, not crime causation; kept in the model it confounds preference with prediction",
+      "coefficient_in_comparison_fit": -0.0234
+    },
+    {
+      "feature": "lit_partial",
+      "reason": "moved to router as preference multiplier",
+      "detail": "as lit_no; also a near-empty dummy in this dataset",
+      "coefficient_in_comparison_fit": 0.0
+    },
+    {
+      "feature": "lit_unknown",
+      "reason": "moved to router as preference multiplier",
+      "detail": "unknown-lighting segments are never scored at all (honesty rule), so the dummy carries no signal",
+      "coefficient_in_comparison_fit": 0.0
+    },
+    {
+      "feature": "isolation",
+      "reason": "moved to router as preference multiplier",
+      "detail": "quiet-vs-busy streets are a route preference the user can weigh, not a crime predictor we should bake in",
+      "coefficient_in_comparison_fit": -0.1066
+    },
+    {
+      "feature": "tide_exposed",
+      "reason": "structurally dead",
+      "detail": "riverside exposure is rare in the crime window and the fitted weight is negligible; live tide data is shown in the app instead",
+      "coefficient_in_comparison_fit": 0.0489
+    },
+    {
+      "feature": "haven_300m",
+      "reason": "excluded before scoring",
+      "detail": "safe-haven density tracks the city centre and duplicates log_dist_centre (confounded); havens are surfaced on the map, not in the crime score",
+      "coefficient_in_comparison_fit": 0.029
+    }
   ],
-  "trained_at": "2026-10-17T14:19:22Z",
+  "design_choice": "Preference-related attributes (lighting, isolation, tide exposure, haven proximity, terrain) are separated from crime prediction so a user's preferences cannot bias the risk estimate: the model predicts reported street crime only, and the router applies each user's preferences as explicit edge-cost multipliers. Risk bands are percentile-based (75th/90th percentile of the fit's scored predictions) rather than absolute thresholds, so bands stay comparable when the base rate moves.",
+  "known_limitations": [
+    "Time-of-day gap: Police UK street-level data has no time field, so the model predicts reported street crime generally, not night-time crime specifically; the night framing is carried by the router's preferences (lighting, quiet streets), not by data.",
+    "Crime-location blurring: Police UK snaps crimes to an anonymous nearby street point; we snap to the nearest walking segment within 120 m, so segment-level counts are approximate by construction.",
+    "Lag-feature dominance: recent-crime history (log1p_lag1 coefficient 0.7619) is the strongest signal; where a street has no recent records the model falls back on structure (type, length, centre distance) and is correspondingly less certain.",
+    "Unknown-lighting exclusion: 45% of walking segments have no lighting data in OSM and are never scored; they show as grey 'risk unknown' in the app rather than being silently guessed."
+  ],
+  "trained_at": "2026-10-17T20:47:19Z",
   "data_sources": [
     "Police UK street-level crime API (OGL v3), months 2026-02, 2026-03, 2026-04, 2026-05, 2026-06, 2026-07, 2026-08",
     "OpenStreetMap lit tags + highway types (ODbL)"

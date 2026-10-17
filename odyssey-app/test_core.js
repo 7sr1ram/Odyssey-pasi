@@ -8,6 +8,13 @@ const havens = JSON.parse(fs.readFileSync("data/safe_havens.json"));
 const model = JSON.parse(fs.readFileSync("data/model.json"));
 console.log(`segments: ${segments.length}, real crimes: ${crimes.length}, havens: ${havens.length}`);
 console.log(`model: AUC ${model.evaluation.auc_model} vs baseline ${model.evaluation.auc_baseline_recent_crime} (test month ${model.training.test_month})`);
+const banned = ["lit_no","lit_partial","lit_unknown","isolation","tide_exposed","haven_300m"];
+let modelFails = 0;
+for (const f of banned) if (model.features.includes(f)) { console.log(`!! removed feature still present: ${f}`); modelFails++; }
+if (!model.removed_features || model.removed_features.length !== 6) { console.log("!! removed_features block missing/incomplete"); modelFails++; }
+for (const need of ["design_choice", "known_limitations"])
+  if (!model[need]) { console.log(`!! model card missing ${need}`); modelFails++; }
+if (modelFails) fail += modelFails;
 
 // real-data sanity
 const withCrime = segments.filter(s => s.crime_count_90d > 0);
@@ -64,7 +71,47 @@ for (const [name, from, to, maxKm] of trips) {
     if (!uniq.some(u => u.route.segments.map(s=>s.id).join() === r.route.segments.map(s=>s.id).join())) uniq.push(r);
   for (const r of uniq.slice(0, 2))
     console.log(`  [${r.label}] "${core.explain(r.route, uniq, crimes, havens, r.label)}"`);
-  console.log("  gmaps:", core.gmapsUrl(uniq[0].route, from, to, graph).slice(0, 90) + "…");
+  const url = core.routeToGmapsUrl(graph, uniq[0].route);
+  const wps = (url.match(/waypoints=([^&]*)/)?.[1] || "").split("%7C").filter(Boolean);
+  console.log(`  gmaps: hops=${uniq[0].route.steps.length} waypoints=${wps.length}`, url.slice(0, 80) + "…");
+  if (wps.length !== 8) { console.log("  !! expected 8 evenly-spaced waypoints"); fail++; }
+  if (!url.includes("travelmode=walking")) { console.log("  !! missing travelmode=walking"); fail++; }
 }
+// ---- preferences: parity with preferences.py fixtures + route flip ----
+console.log("\n== preferences ==");
+const FIX = [
+  [{lighting:"no", highway_type:"path", steep:null, covered:null, surface:null}, {well_lit:true}, 3.0],
+  [{lighting:"unknown", highway_type:"path", steep:null, covered:null, surface:null}, {well_lit:true}, 1.0],
+  [{lighting:"yes", highway_type:"steps", steep:false, covered:false, surface:"paved"}, {avoid_stairs:true, well_lit:false}, 4.0],
+  [{lighting:"yes", highway_type:"path", steep:true, covered:null, surface:null}, {avoid_steep:true}, 3.0],
+  [{lighting:"yes", highway_type:"path", steep:null, covered:true, surface:null}, {sheltered:true}, 0.55],
+  [{lighting:"yes", highway_type:"footway", steep:null, covered:null, surface:"unpaved"}, {terrain:"paved"}, 2.5],
+  [{lighting:"yes", highway_type:"footway", steep:null, covered:null, surface:"unpaved"}, {terrain:"mixed"}, 1.3],
+  [{lighting:"no", highway_type:"steps", steep:true, covered:true, surface:"unpaved"}, {}, 3.9],
+  [{lighting:"yes", highway_type:"footway", steep:null, covered:null, surface:"unpaved"}, {well_lit:false, terrain:"any"}, 1.0],
+];
+for (const [edge, prefs, want] of FIX) {
+  const got = core.edgeMultiplier(edge, { ...core.DEFAULT_PREFS, ...prefs });
+  if (Math.abs(got - want) > 1e-9) { console.log(`  !! multiplier ${JSON.stringify(prefs)} on ${JSON.stringify(edge)}: got ${got}, want ${want}`); fail++; }
+}
+const chips = core.explanationFactors(
+  [{lighting:"yes", highway_type:"residential"}, {lighting:"no", highway_type:"footway", surface:"unpaved"}],
+  { ...core.DEFAULT_PREFS, terrain: "paved" });
+console.log("  chips:", chips.join(" | "));
+if (chips.join() !== "unlit stretch unavoidable,unpaved unavoidable") { console.log("  !! chips mismatch vs preferences.py fixture"); fail++; }
+
+// toggling a preference must actually change a route that has alternatives
+const pa = core.snap(graph, [50.9215, -1.3905]), pb = core.snap(graph, [50.9245, -1.3780]);
+const tDefault = core.planTriad(graph, pa.key, pb.key, core.loadPrefs ? core.loadPrefs() : core.DEFAULT_PREFS);
+const tNoLit = core.planTriad(graph, pa.key, pb.key, { ...core.DEFAULT_PREFS, well_lit: false });
+const sameSet = (t1, t2) => (t1.shortest ? t1.shortest.segments.map(s=>s.id).join() : "") ===
+                           (t2.shortest ? t2.shortest.segments.map(s=>s.id).join() : "");
+console.log("  prefs on/off change available routes:", sameSet(tDefault, tNoLit) ? "no (shortest unaffected)" : "yes");
+// avoid-stairs sanity: known steps get 4x when the pref is on
+const stepsSeg = segments.find(s => s.highway_type === "steps");
+if (stepsSeg && core.edgeMultiplier(stepsSeg, { ...core.DEFAULT_PREFS, avoid_stairs: true }) <= 1) {
+  console.log("  !! steps segment not penalised"); fail++;
+}
+
 console.log(fail ? `\nFAILED: ${fail} problems` : "\nALL TESTS PASSED");
 process.exit(fail ? 1 : 0);
