@@ -12,7 +12,7 @@ http://localhost:8000. No backend, no accounts, no keys.
   bound — and says so when a corridor offers no real safety gain.
 - **Live:** the panel fetches the real-time Environment Agency tide gauge at
   Woolston and active flood warnings directly in your browser.
-- **Handoff:** one tap opens the exact route in Google Maps with waypoints.
+- **Handoff:** one tap opens a single continuous route in Google Maps (origin to destination, walking) — no intermediate stops.
 - **SOS:** 999 / 101 dial buttons, copy-my-location, official guidance links.
 - **Honesty:** `node test_core.js` verifies routes on the real data;
   `data/data_manifest.json` lists every source with its licence and fetch
