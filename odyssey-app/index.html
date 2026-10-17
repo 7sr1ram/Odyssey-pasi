@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Odyssey — Southampton</title>
+<link rel="stylesheet" href="vendor/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <aside id="panel">
+    <header>
+      <h1>Odyssey</h1>
+      <p class="tagline">Safest walking routes at night — Southampton · navigation by Athena</p>
+    </header>
+
+    <section id="trip-form">
+      <label>From</label>
+      <select id="from"></select>
+      <label>To</label>
+      <select id="to"></select>
+      <label>Time (optional)</label>
+      <input type="datetime-local" id="when">
+      <button id="plan">Plan route</button>
+        <button id="from-here" class="secondary" title="Uses GPS: start where you are, destination from the list">Route from my location</button>
+      <p class="hint">or click two points on the map to set start / destination</p>
+    </section>
+
+    <section id="routes" class="hidden"></section>
+
+    <section id="live-section">
+      <p class="live" id="live"></p>
+    </section>
+
+    <section id="about">
+      <p class="coverage" id="coverage"></p>
+      <div id="sources"></div>
+      <p class="sources">
+        Data: © OpenStreetMap contributors (ODbL) · lighting tags + UK road defaults ·
+        incidents: synthetic demo layer (Police UK pattern-calibrated).
+      </p>
+    </section>
+  </aside>
+
+  <div id="map"></div>
+
+  <div id="sos-overlay" class="hidden">
+    <div class="sos-card">
+      <h2>Emergency</h2>
+      <a class="sos-btn emergency" href="tel:999">Call 999</a>
+      <a class="sos-btn" href="tel:101">Call 101 (non-emergency)</a>
+      <button class="sos-btn" id="sos-copy">Copy my location</button>
+      <p id="sos-location" class="hint"></p>
+      <p class="hint">Official guidance: <a href="https://www.gov.uk/contact-999" target="_blank">when to call 999</a> ·
+        <a href="https://www.suzylamplugh.org/pages/categories?category=safety-advice" target="_blank">Suzy Lamplugh Trust personal safety</a> ·
+        <a href="https://www.southampton.gov.uk/council-democracy/community-safety/community-safety-team/" target="_blank">Southampton community safety</a></p>
+      <button id="sos-close">Close</button>
+    </div>
+  </div>
+
+  <button id="sos-open" title="Emergency SOS">SOS</button>
+  <div id="legend">
+    <span><i class="sw low"></i>low</span>
+    <span><i class="sw med"></i>medium</span>
+    <span><i class="sw high"></i>high</span>
+    <span><i class="sw unknown"></i>risk unknown</span>
+  </div>
+</div>
+<script src="vendor/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
