@@ -1,0 +1,37 @@
+# Publishes the app (the odyssey-app folder) to GitHub Pages whenever the
+# `questionnaire` branch is pushed, so it can be opened on a phone over https
+# (browsers only share GPS on https links). Pushes to any other branch,
+# including main, do not publish. The site is fully static: no server, no keys.
+#
+# One-time setup (already done on this fork): Settings > Pages > Source =
+# "GitHub Actions", and the questionnaire branch is allowed to deploy to the
+# github-pages environment.
+name: Publish app to GitHub Pages
+
+on:
+  push:
+    branches: [questionnaire]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: odyssey-app
+      - id: deployment
+        uses: actions/deploy-pages@v5
