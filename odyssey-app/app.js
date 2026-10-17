@@ -178,6 +178,11 @@ function planTriad(graph, startKey, destKey) {
   return { shortest, safest, safestNote, balanced };
 }
 
+function etaTime(minutes) {
+  return new Date(Date.now() + minutes * 60000)
+    .toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+}
+
 /* ----------------------- plain-English explanation ---------------------
  * Template-based, deterministic: the same route always reads the same.
  * All crime numbers are real Police UK data (see entities/incidents.json).
@@ -390,17 +395,16 @@ if (typeof document !== "undefined") (async function () {
   $("live").textContent = "checking live EA data…";
   refreshLive();
 
-  /* trip form */
-  const selFrom = $("from"), selTo = $("to");
-  for (const sel of [selFrom, selTo]) {
-    for (const [name] of PRESETS) {
-      const o = document.createElement("option");
-      o.value = o.textContent = name;
-      sel.appendChild(o);
-    }
+  /* destination geocoding: Nominatim (OSM, ODbL), bounded to Southampton */
+  const NOMINATIM = "https://nominatim.openstreetmap.org/search";
+  const SOTON_VIEWBOX = "-1.48,50.86,-1.33,50.96";   // left,top,right,bottom
+  async function geocode(q) {
+    const url = `${NOMINATIM}?format=jsonv2&limit=1&accept-language=en` +
+      `&countrycodes=gb&viewbox=${SOTON_VIEWBOX}&bounded=1&q=${encodeURIComponent(q)}`;
+    const r = await fetch(url).then(x => x.json());
+    return Array.isArray(r) && r[0] ? r[0] : null;
   }
-  selFrom.selectedIndex = 0;
-  selTo.selectedIndex = 1;
+  function setStatus(msg) { $("status").textContent = msg; }
 
   let clickStart = null, clickCount = 0, markers = [];
   map.on("click", (e) => {
@@ -439,14 +443,26 @@ if (typeof document !== "undefined") (async function () {
     routeLayers = [];
     routeLines = []; routeCards = []; selected = -1;
     markers.forEach(m => m && map.removeLayer(m));
+    planMarkers.forEach(m => map && map.removeLayer(m));
   }
 
-  async function planRoute(fromLL, toLL) {
+  let planMarkers = [];
+  function setPlanMarkers(fromLL, toLL, aLabel, bLabel) {
+    planMarkers.forEach(m => map.removeLayer(m));
+    const mk = (ll, letter, name) => L.marker(ll, {
+      icon: L.divIcon({ className: "", html:
+        `<b style="color:#7dd3fc;font-size:14px">${letter}</b>` }),
+    }).bindPopup(`<b>${esc(name || letter)}</b>`).addTo(map);
+    planMarkers = [mk(fromLL, "A", aLabel), mk(toLL, "B", bLabel)];
+  }
+
+  async function planRoute(fromLL, toLL, destName) {
     clearRouteLayers();
     const routesEl = $("routes");
     routesEl.classList.remove("hidden");
     routesEl.innerHTML = "<p class='hint'>Athena is scoring routes…</p>";
 
+    setPlanMarkers(fromLL, toLL, "Your location", destName);
     const a = snap(graph, fromLL), b = snap(graph, toLL);
     if (a.dist > 400 || b.dist > 400) {
       routesEl.innerHTML = "<p class='hint'>Start or destination is too far from the walking network — pick a point nearer a street or path.</p>";
@@ -521,25 +537,29 @@ if (typeof document !== "undefined") (async function () {
       }));
   }
 
-  $("plan").addEventListener("click", () => {
-    const f = PRESETS.find(p => p[0] === selFrom.value);
-    const t = PRESETS.find(p => p[0] === selTo.value);
-    if (f && t && f !== t) planRoute([f[1], f[2]], [t[1], t[2]]);
-  });
-
-  /* "where do you want to go": start from live GPS, destination from the list */
-  $("from-here").addEventListener("click", () => {
-    const t = PRESETS.find(p => p[0] === selTo.value);
-    if (!t) return;
-    $("from-here").textContent = "Finding you…";
-    navigator.geolocation?.getCurrentPosition(
+  /* the core flow: type where you're going, start from where you are */
+  $("plan").addEventListener("click", async () => {
+    const q = $("dest").value.trim();
+    if (!q) { setStatus("Type a destination first — e.g. 'Ocean Village' or a street name."); return; }
+    setStatus("Searching for that place…");
+    let dest = null;
+    try { dest = await geocode(q); } catch (e) { /* offline / blocked */ }
+    if (!dest) { setStatus("Couldn't find that place in Southampton. Try a street name, landmark, or postcode area."); return; }
+    const destLL = [+dest.lat, +dest.lon];
+    const destName = (dest.display_name || "").split(",")[0];
+    setStatus(`Destination: ${destName}. Getting your location…`);
+    if (!navigator.geolocation) {
+      setStatus("This browser can't share GPS — click two points on the map instead (start, then destination).");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
       (pos) => {
-        $("from-here").textContent = "Route from my location";
-        planRoute([pos.coords.latitude, pos.coords.longitude], [t[1], t[2]]);
+        setStatus(`Heading to ${destName} — Athena is scoring routes…`);
+        planRoute([pos.coords.latitude, pos.coords.longitude], destLL, destName);
       },
-      () => {
-        $("from-here").textContent = "GPS unavailable — pick a start above";
-      }, { enableHighAccuracy: true, timeout: 8000 });
+      (err) => {
+        setStatus("GPS unavailable (" + err.message + ") — click two points on the map: first your start, then your destination.");
+      }, { enableHighAccuracy: true, timeout: 10000 });
   });
 
   /* SOS: official guidance links, per safety-product best practice */

@@ -107,3 +107,6 @@ a { color: var(--accent); }
 .route-card .choose { font-weight: 600; }
 button.choose[disabled] { opacity: 0.75; }
 button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+
+/* plan-flow status line */
+#status { min-height: 1.2em; color: var(--muted); font-size: 0.9em; margin: 8px 0 0; }

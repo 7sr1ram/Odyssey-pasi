@@ -16,15 +16,11 @@
     </header>
 
     <section id="trip-form">
-      <label>From</label>
-      <select id="from"></select>
-      <label>To</label>
-      <select id="to"></select>
-      <label>Time (optional)</label>
-      <input type="datetime-local" id="when">
-      <button id="plan">Plan route</button>
-        <button id="from-here" class="secondary" title="Uses GPS: start where you are, destination from the list">Route from my location</button>
-      <p class="hint">or click two points on the map to set start / destination</p>
+      <label for="dest">Where are you going?</label>
+      <input type="text" id="dest" placeholder="e.g. Ocean Village" autocomplete="off">
+      <button id="plan">Find my safest route</button>
+      <p class="hint">Starts from your GPS location. No signal? Click two points on the map instead (start, then destination).</p>
+      <p class="status" id="status"></p>
     </section>
 
     <section id="routes" class="hidden"></section>
@@ -38,7 +34,7 @@
       <div id="sources"></div>
       <p class="sources">
         Data: © OpenStreetMap contributors (ODbL) · lighting tags + UK road defaults ·
-        incidents: synthetic demo layer (Police UK pattern-calibrated).
+        crime: real Police UK street-level records (OGL v3) · destination search: Nominatim (OSM).
       </p>
     </section>
   </aside>
