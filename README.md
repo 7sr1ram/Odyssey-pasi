@@ -46,7 +46,6 @@ Run the routing tests on the real data: `node odyssey-app/test_core.js`.
 | Environment Agency flood-monitoring API | live Woolston tide gauge + flood warnings, fetched live in the browser | OGL v3 |
 | OSM nightlife venues | model features | ODbL 1.0 |
 | Curated safe havens | 15 real staffed places, hours checked Oct 2026 | this repo |
-| CARTO / Leaflet | map tiles / map library (vendored) | © CARTO / BSD-2 |
 
 The app renders this provenance itself: the **Data sources & freshness**
 panel is generated from `entities/data_manifest.json`, and each segment

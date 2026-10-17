@@ -22,4 +22,4 @@ http://localhost:8000. No backend, no accounts, no keys.
 Regenerate all data + retrain the model: see `../odyssey-city-data`.
 Full write-up and demo script: `../GUIDE.md` and `../odyssey-city-data/README.md`.
 
-Licences: OSM ODbL · Police UK & EA OGL v3 · CARTO tiles · Leaflet BSD · code MIT.
+Licences: OSM ODbL (basemap, network) · Police UK & EA OGL v3 · Leaflet BSD · code MIT.

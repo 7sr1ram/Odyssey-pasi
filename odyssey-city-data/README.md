@@ -43,7 +43,7 @@ cp entities/*.json ../odyssey-app/data/
 | Environment Agency flood-monitoring API | **Live** tide gauge (Woolston E12660) + active flood warnings, fetched live in the browser during use | OGL v3 | every app load |
 | OSM nightlife venues | pubs/bars/nightclubs as model features | ODbL | build date |
 | Curated safe havens | 15 real staffed places; hours hand-checked Oct 2026 | our curation | Oct 2026 |
-| CARTO dark tiles | map background | © CARTO, © OSM | runtime |
+| GeoJSON basemap (water/green/rail) | map background, self-contained | © OSM contributors (ODbL) | built by pipeline (step 2/8) |
 | (optional) UKHO Admiralty Tidal API | tide predictions; set `TIDAL_API_KEY` to enable | UKHO free tier | build date |
 
 The app itself shows this table live: **Data sources & freshness** panel,
@@ -132,5 +132,5 @@ card, and a live demo.
 ## Licences & attribution
 
 OpenStreetMap data © OSM contributors, ODbL 1.0. Police UK and Environment
-Agency data under OGL v3. Map tiles © CARTO. Leaflet BSD-2-Clause. App code:
+Agency data under OGL v3. Basemap GeoJSON © OSM contributors (ODbL). Leaflet BSD-2-Clause. App code:
 MIT. Crime data contains public-sector information licensed under OGL v3.
