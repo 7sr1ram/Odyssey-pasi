@@ -1,4 +1,5 @@
-/* Route preferences: questionnaire wizard, Settings, summary card, large-text mode.
+/* Route preferences (one question of on/off buttons), Settings, summary card,
+   route-card additions (match list, ride banner, ride sheet) and large-text mode.
    Uses the colour variables defined in style.css. */
 
 /* ---- header gear + summary card ---- */
@@ -22,21 +23,13 @@
   padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px;
   background: var(--panel); color: var(--text); font-size: 12px;
 }
+.pc-chips li.soon { border-style: dashed; color: var(--muted); }
 .pc-chips li.more { color: var(--muted); }
 .pc-note { margin: 6px 0 10px; color: var(--muted); font-size: 12px; }
 .pc-btn {
   width: 100%; min-height: 44px; padding: 10px; font-weight: 600;
   background: var(--panel); color: var(--accent); border: 1px solid var(--accent); border-radius: 8px;
 }
-
-/* ---- status badges (text, not colour alone) ---- */
-.tier {
-  display: inline-block; margin-left: 6px; padding: 1px 8px; border: 1px solid; border-radius: 999px;
-  font-size: 11px; font-weight: 700; line-height: 1.4; white-space: nowrap; vertical-align: middle;
-}
-.tier-ready   { color: #6ee7b7; border-color: rgba(16,185,129,.55); background: rgba(16,185,129,.12); }
-.tier-partial { color: #fcd34d; border-color: rgba(245,158,11,.55); background: rgba(245,158,11,.12); }
-.tier-soon    { color: var(--muted); border-color: var(--border); background: transparent; }
 
 /* ---- modal frame ---- */
 /* z-index sits above the map controls but below the SOS screen (2000). */
@@ -48,7 +41,7 @@
 #prefs-modal *, #prefs-modal *::before, #prefs-modal *::after { box-sizing: border-box; }
 .pm-card {
   position: relative; display: flex; flex-direction: column;
-  width: min(640px, 100%); max-height: min(94vh, 900px);
+  width: min(680px, 100%); max-height: min(94vh, 900px);
   background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
   box-shadow: 0 20px 60px rgba(0,0,0,.6); overflow: hidden;
 }
@@ -57,16 +50,14 @@
 .pm-step { margin: 0; font-size: .85em; color: var(--muted); }
 .pm-head-actions { display: flex; align-items: center; gap: 8px; }
 .pm-title { margin: 8px 0 0; font-size: 1.3em; }
-.pm-sos {
+.pm-sos, .rs-sos {
   min-height: 34px; padding: 6px 12px; border-radius: 999px;
   background: var(--high); color: #fff; font-weight: 800; font-size: .85em; letter-spacing: .5px;
 }
-.pm-close {
+.pm-close, .rs-close {
   width: 34px; height: 34px; padding: 0; border-radius: 50%;
   background: var(--bg); color: var(--text); border: 1px solid var(--border); font-size: 1.2em; line-height: 1;
 }
-.pm-progress { margin-top: 10px; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
-.pm-progress > span { display: block; height: 100%; background: var(--accent); transition: width .25s ease; }
 .pm-body { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 18px; -webkit-overflow-scrolling: touch; }
 .pm-foot {
   display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between;
@@ -80,60 +71,49 @@
 }
 .pm-btn.primary { background: var(--accent); color: #08121c; border-color: var(--accent); }
 .pm-btn.danger { background: transparent; color: #fca5a5; border-color: rgba(239,68,68,.6); }
-.pm-btn:focus-visible, .pm-sos:focus-visible, .pm-close:focus-visible, .chip:focus-visible,
-.preset:focus-visible, .step-btn:focus-visible, .opt input:focus-visible,
-#prefs-modal input[type="range"]:focus-visible, #prefs-modal textarea:focus-visible,
-#prefs-modal input[type="datetime-local"]:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+.pm-btn:focus-visible, .pm-sos:focus-visible, .pm-close:focus-visible, .tog:focus-visible,
+.step-btn:focus-visible, .opt input:focus-visible, .rs-btn:focus-visible, .rs-sos:focus-visible,
+.rs-close:focus-visible, .rb-open:focus-visible,
+#prefs-modal input[type="range"]:focus-visible, #prefs-modal input[type="datetime-local"]:focus-visible,
+#ride-sheet input:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
 
 /* ---- content ---- */
 #prefs-modal h2 { margin: 0 0 .5em; font-size: 1.35em; line-height: 1.25; }
 #prefs-modal h2:focus, #prefs-modal h3:focus { outline: none; }
-.pm-sec-title { margin: 1.2em 0 .4em; font-size: 1.05em; }
+.pm-sec-title { margin: 1.2em 0 .5em; font-size: 1.05em; }
 .pm-section { padding: 6px 0 14px; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
 .pm-section:last-child { border-bottom: 0; }
 .pm-section > div > .pm-sec-title:first-child { margin-top: .2em; }
-.pm-lead { margin: 0 0 .8em; font-size: 1.05em; line-height: 1.5; }
+.pm-lead { margin: 0 0 .8em; font-size: 1.02em; line-height: 1.5; }
 .pm-sub { margin: 0 0 .9em; color: var(--muted); font-size: .92em; line-height: 1.5; }
-.pm-preview {
-  margin: 0 0 1em; padding: 10px 12px; border: 1px dashed var(--med); border-radius: 10px;
-  background: rgba(245,158,11,.08); font-size: .9em; line-height: 1.5;
-}
-.pm-status { min-height: 1.3em; margin: 8px 0 0; color: var(--accent); font-size: .9em; }
+.pm-status { min-height: 1.3em; margin: 10px 0 0; color: var(--accent); font-size: .9em; }
+.f-q { margin: 2px 0 8px; }
+.f-hint { margin: 8px 0 0; color: var(--muted); font-size: .88em; line-height: 1.45; }
 
-.presets { display: grid; gap: 8px; }
-.preset {
-  display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 12px 14px; min-height: 56px;
+/* the on/off buttons */
+.togs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.tog {
+  display: flex; align-items: flex-start; gap: 10px; text-align: left; min-height: 56px; padding: 10px 12px;
   border: 1px solid var(--border); border-radius: 12px; background: var(--bg); color: var(--text); font-size: 1em;
 }
-.preset-name { font-weight: 700; }
-.preset-blurb { color: var(--muted); font-size: .88em; }
-.preset[aria-pressed="true"] { border-color: var(--accent); background: rgba(125,211,252,.12); }
-.preset[aria-pressed="true"] .preset-name::before { content: "✓ "; }
-
-.chips { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.chip {
-  display: flex; align-items: center; gap: 10px; text-align: left; min-height: 56px; padding: 8px 12px;
-  border: 1px solid var(--border); border-radius: 12px; background: var(--bg); color: var(--text); font-size: 1em;
-}
-.chip .rank {
-  flex: none; width: 28px; height: 28px; border-radius: 50%; border: 2px dashed var(--border);
+.tog-mark {
+  flex: none; width: 24px; height: 24px; margin-top: 1px; border-radius: 50%; border: 2px solid var(--border);
   display: inline-flex; align-items: center; justify-content: center; font-weight: 800; color: #08121c;
 }
-.chip[aria-pressed="true"] { border-color: var(--accent); background: rgba(125,211,252,.12); }
-.chip[aria-pressed="true"] .rank { background: var(--accent); border: 2px solid var(--accent); }
-.chip .chip-label { flex: 1; }
-.chip.is-blocked { opacity: .6; }
+.tog-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tog-label { font-weight: 600; line-height: 1.3; }
+.tog-hint { color: var(--muted); font-size: .82em; line-height: 1.35; }
+.tog[aria-pressed="true"] { border-color: var(--accent); background: rgba(125,211,252,.14); }
+.tog[aria-pressed="true"] .tog-mark { background: var(--accent); border-color: var(--accent); }
+.tog[aria-pressed="true"] .tog-mark::before { content: "✓"; }
+.tog.is-soon { border-style: dashed; }
+.tog.is-soon .tog-label { color: var(--muted); }
 
 .factor {
   min-width: 0; margin: 0 0 14px; padding: 12px 12px 10px;
   border: 1px solid var(--border); border-radius: 12px; background: rgba(0,0,0,.12);
 }
-.factor.is-soon { border-style: dashed; }
 .factor legend { padding: 0 6px; font-weight: 700; }
-.f-q { margin: 2px 0 8px; }
-.f-hint { margin: 8px 0 0; color: var(--muted); font-size: .88em; line-height: 1.45; }
-.prio-tag { margin-left: 6px; color: var(--accent); font-size: .8em; font-weight: 700; }
-.prio-tag:empty { display: none; }
 
 /* radio groups drawn as big buttons (native radios underneath) */
 .seg { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -159,32 +139,89 @@
 #prefs-modal input[type="range"] { width: 100%; height: 32px; margin: 0; accent-color: var(--accent); }
 .ticks { display: flex; justify-content: space-between; margin-top: 2px; color: var(--muted); font-size: .8em; }
 
-/* checkbox / radio rows */
 #prefs-modal .opt { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 0; min-height: 44px; padding: 6px 2px; font-size: inherit; color: var(--text); cursor: pointer; }
 .opt input { flex: none; width: 22px; height: 22px; margin: 0; accent-color: var(--accent); }
 .opt .opt-text { flex: 1; min-width: 0; }
-#prefs-modal label.block { display: block; margin: 0 0 8px; font-size: inherit; color: var(--text); }
-#prefs-modal textarea {
-  width: 100%; padding: 10px 12px; font: inherit; color: var(--text);
-  background: var(--bg); border: 1px solid var(--border); border-radius: 10px; resize: vertical;
+
+/* ---- route cards: notes, match list, crime info, ride banner ---- */
+.plan-note { margin: 10px 0 0; line-height: 1.45; }
+.match-list { list-style: none; margin: 8px 0 4px; padding: 0; display: grid; gap: 6px; }
+.match-item { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; line-height: 1.4; }
+.mi-icon {
+  flex: none; width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid var(--border);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800;
 }
-.count { display: block; margin-top: 4px; text-align: right; color: var(--muted); font-size: .8em; }
+.mi-body { min-width: 0; }
+.mi-label { font-weight: 600; }
+.mi-word { margin-left: 2px; padding: 0 6px; border: 1px solid var(--border); border-radius: 999px; font-size: 11px; font-weight: 700; color: var(--muted); white-space: nowrap; }
+.mi-detail { display: block; color: var(--muted); }
+.st-matched .mi-icon { background: var(--low); border-color: var(--low); color: #08121c; }
+.st-matched .mi-word { color: #6ee7b7; border-color: rgba(16,185,129,.55); }
+.st-partly .mi-icon { background: var(--med); border-color: var(--med); color: #08121c; }
+.st-partly .mi-word { color: #fcd34d; border-color: rgba(245,158,11,.55); }
+.st-missed .mi-icon { background: var(--high); border-color: var(--high); color: #fff; }
+.st-missed .mi-word { color: #fca5a5; border-color: rgba(239,68,68,.55); }
+.st-unknown .mi-icon { border-style: dashed; color: var(--text); }
+.st-na { opacity: .8; }
+.info-block { margin: 10px 0 2px; font-size: 12px; color: var(--muted); }
+.info-block summary { cursor: pointer; color: var(--text); min-height: 28px; }
+.info-block p { margin: 6px 0; line-height: 1.45; }
+
+.ride-banner {
+  margin: 10px 0 2px; padding: 10px 12px; border: 1px solid #2f6f8f; border-radius: 8px;
+  background: rgba(125,211,252,.10);
+}
+.rb-text { margin: 0; font-size: 13px; line-height: 1.45; }
+.rb-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 8px; }
+.rb-chip { padding: 1px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 11px; }
+.rb-open {
+  width: 100%; min-height: 44px; font-weight: 600; background: var(--accent); color: #08121c; border-radius: 8px;
+}
+
+/* ---- ride sheet (slides up from the bottom; SOS stays reachable) ---- */
+#ride-sheet {
+  position: fixed; inset: 0; z-index: 1600; display: flex; align-items: flex-end; justify-content: center;
+  background: rgba(0,0,0,.6); color: var(--text); font-size: 15px;
+}
+#ride-sheet *, #ride-sheet *::before, #ride-sheet *::after { box-sizing: border-box; }
+.rs-card {
+  width: min(520px, 100%); max-height: 92vh; overflow-y: auto; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 16px 16px 0 0; padding: 14px 18px calc(16px + env(safe-area-inset-bottom));
+  animation: rs-up .22s ease-out;
+}
+@keyframes rs-up { from { transform: translateY(24px); opacity: .4; } to { transform: none; opacity: 1; } }
+.rs-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.rs-head h2 { margin: 0; font-size: 1.25em; }
+.rs-head h2:focus { outline: none; }
+.rs-head-actions { display: flex; align-items: center; gap: 8px; }
+.rs-where { margin: 4px 0 6px; color: var(--muted); font-size: .92em; }
+.rs-btn {
+  display: flex; flex-direction: column; gap: 2px; width: 100%; margin-top: 8px; padding: 12px 14px; min-height: 56px;
+  border: 1px solid var(--border); border-radius: 12px; background: var(--bg); color: var(--text);
+  text-align: left; text-decoration: none; font-size: 1em;
+}
+.rs-btn.primary { background: var(--accent); border-color: var(--accent); color: #08121c; }
+.rs-name { font-weight: 700; }
+.rs-sub { font-size: .85em; opacity: .85; }
+.rs-status { min-height: 1.3em; margin: 8px 0 0; color: var(--accent); font-size: .9em; }
+.rs-link { width: 100%; margin-top: 6px; padding: 8px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px; }
+.rs-foot { margin: 10px 0 0; color: var(--muted); font-size: .82em; line-height: 1.45; }
 
 /* ---- phones: full-screen sheet ---- */
 @media (max-width: 720px) {
   #prefs-modal { padding: 0; }
   .pm-card { width: 100%; height: 100%; max-height: 100%; border: 0; border-radius: 0; }
-  .chips { grid-template-columns: 1fr; }
+  .togs { grid-template-columns: 1fr; }
   .pm-foot-right { margin-left: 0; width: 100%; }
   .pm-foot-right .pm-btn.primary { flex: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .pm-progress > span { transition: none; }
+  .rs-card { animation: none; }
 }
 
-/* ---- large text mode (the questionnaire's "Large text" switch) ---- */
-body.large-text #prefs-modal { font-size: 19px; }
+/* ---- large text mode (Settings > Large text) ---- */
+body.large-text #prefs-modal, body.large-text #ride-sheet { font-size: 19px; }
 body.large-text #panel { font-size: 17px; }
 body.large-text #panel .tagline { font-size: 16px; }
 body.large-text #panel label,
@@ -192,6 +229,7 @@ body.large-text #panel .hint,
 body.large-text #panel #status { font-size: 15px; }
 body.large-text #panel .route-meta { font-size: 16px; }
 body.large-text #panel .route-explain { font-size: 17px; line-height: 1.55; }
+body.large-text #panel .match-item, body.large-text #panel .rb-text { font-size: 16px; }
 body.large-text #panel .route-actions a,
 body.large-text #panel .route-actions button { font-size: 16px; padding: 13px 8px; }
 body.large-text #panel .live,

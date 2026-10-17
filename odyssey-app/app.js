@@ -145,14 +145,25 @@ function findRoute(graph, startKey, destKey, profile) {
   return { segments, chainLen, steps: back };
 }
 
+/* Athena band for a route. Unscored ("unknown") segments are NOT skipped:
+ * a route with no scored segments, or mostly unscored by length, is "unknown",
+ * never "low". unknownShare is the share of walked metres that are unscored. */
 function routeStats(route) {
   const len = route.chainLen;
-  let worst = "low", unknownCount = 0;
+  let worst = "low", unknownCount = 0, scored = 0, unknownLen = 0;
+  const bySeg = new Map(route.segments.map(s => [s.id, s]));
   for (const s of route.segments) {
     if (s.risk_band === "unknown") { unknownCount++; continue; }
+    scored++;
     if (BAND_RANK[s.risk_band] > BAND_RANK[worst]) worst = s.risk_band;
   }
-  return { len, minutes: len / WALK_M_PER_MIN, band: worst, unknownCount };
+  for (const st of route.steps || []) {
+    const s = bySeg.get(st.seg);
+    if (s && s.risk_band === "unknown") unknownLen += st.len;
+  }
+  const unknownShare = len > 0 ? unknownLen / len : 0;
+  const band = scored === 0 || unknownShare >= 0.5 ? "unknown" : worst;
+  return { len, minutes: len / WALK_M_PER_MIN, band, unknownCount, unknownShare };
 }
 
 /* Full route triad with the detour bound applied. Returns
@@ -166,13 +177,17 @@ function planTriad(graph, startKey, destKey) {
     for (const [band, p] of Object.entries(PROFILES.safest)) pen[band] = p * f;
     const r = findRoute(graph, startKey, destKey, { ...pen, rw: RISK_W.safest * f });
     if (!r) continue;
-    safest = safest || r;
     if (routeStats(r).minutes - shortMin <= MAX_EXTRA_MIN) {
       safest = r;
       if (f < 1) safestNote =
         `Best risk reduction Athena can offer within a ${MAX_EXTRA_MIN}-minute detour.`;
       break;
     }
+  }
+  // nothing stayed within the bound: never exceed it, fall back to the fastest route
+  if (!safest && shortest) {
+    safest = shortest;
+    safestNote = `No lower-risk route fits within a ${MAX_EXTRA_MIN}-minute detour, so this is the fastest route.`;
   }
   const balanced = findRoute(graph, startKey, destKey, "balanced");
   return { shortest, safest, safestNote, balanced };
@@ -184,9 +199,416 @@ function etaTime(minutes, base) {
     .toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 }
 
+/* ===================== preference-aware planner =========================
+ * planRoutes() turns the questionnaire's on/off buttons into per-segment
+ * walking costs (a cost multiplier on each metre) and returns up to three
+ * different routes: Best match, Fastest, Alternative.
+ *  - "No stairs" is strict: those segments are removed. Every other button is
+ *    soft: it adds cost, and the extra-time limit caps how far it can pull.
+ *  - Unknown data is never treated as unsafe. For lighting, "assumed" UK
+ *    defaults count as not confirmed (half weight) and unknown as 0.6.
+ *  - The Athena crime model only affects ranking when the "crime" button is on.
+ * Everything is measured on the metres actually walked (route.steps).
+ * ======================================================================= */
+const MAIN_CLASSES = new Set(["primary", "secondary", "tertiary"]);
+const SIDE_CLASSES = new Set(["residential", "living_street", "unclassified"]);
+const SOFT_B = 3.0;          // a fully-violated button makes a metre cost up to 1 + 3 = 4x
+const STAIRS_SOFT = 40;      // only used when "No stairs" is relaxed ("Show routes anyway")
+const TURN_M = 60;           // walking-metre equivalent of one turn
+const TURN_DEG = 35;         // a turn = a direction change this big at a junction
+const LIMIT_FACTORS = [1, 0.5, 0.2, 0];    // preference strength tried against the extra-time limit
+const SAME_MAX = 0.1;        // routes closer than this (share of metres not shared) count as the same
+const DISTINCT_MIN = 0.2;    // an Alternative must differ from the others by at least this
+const DEFAULT_EXTRA_MIN = 10;
+const SOFT_STRENGTH = { lit: 1, parks: 1, unpaved: 1, traffic: 0.8, shared: 0.8,
+                        underpass: 1, passage: 1, main: 0.8, quiet: 0.8, nightlife: 1 };
+// Buttons the questionnaire shows as "Coming soon": saved, but nothing applies them.
+// (Keep in step with prefs.js.)
+const SOON_IDS = ["slopes", "narrow", "crossings", "kerbs", "rest", "staffed", "busy", "isolated"];
+/* All route names live here, so changing the wording is one edit. */
+const ROUTE_LABELS = { best: "Best match", fastest: "Fastest", alt: "Alternative",
+                       both: "Best match · also the fastest" };
+// used only when the caller doesn't pass opts.labels (the questionnaire's own labels)
+const LABEL_FALLBACK = { lit: "Well-lit (confirmed lighting)", stairs: "No stairs", unpaved: "Avoid unpaved or uneven surfaces",
+  parks: "Avoid parks and green spaces", main: "Stay on main streets", quiet: "Stay on quiet side streets",
+  traffic: "Avoid paths beside busy roads", shared: "Avoid shared walking and cycling paths",
+  underpass: "Avoid underpasses", passage: "Avoid enclosed passages", nightlife: "Avoid nightlife areas",
+  crime: "Avoid streets with more recorded crime", shorter: "Shorter walk", further: "Happy to go further",
+  turns: "Fewer turns, simpler route" };
+
+/* Facts about one segment that preferences care about. x = its entry in
+ * segment_extras.json (may be undefined). */
+function segmentAttrs(s, x) {
+  const hw = s.highway_type;
+  const lit = s.lighting === "no" ? "no"
+    : s.lighting === "yes" ? ((s.lighting_source || "").startsWith("assumed") ? "assumed" : "confirmed")
+    : "unknown";
+  x = x || {};
+  return {
+    cls: hw === "service" ? "service" : MAIN_CLASSES.has(hw) ? "main" : SIDE_CLASSES.has(hw) ? "side" : "path",
+    steps: hw === "steps",
+    lit,                                          // confirmed | assumed | unknown | no
+    park: x.g || 0,                               // share of the segment inside mapped green space
+    unpaved: x.su === "u" ? true : x.su === "p" ? false : null,   // null = surface not mapped
+    underpass: !!x.up, passage: !!x.ps, shared: x.sh || 0,        // shared: 1 = shared, 2 = segregated
+    mainRoad: !!x.mr, crossing: !!x.cx,
+    nightlife: s.nightlife_venues_250m || 0,
+  };
+}
+
+/* Attach segment_extras.json (or null) to a graph. Safe to call with null:
+ * the extras-based buttons then simply find nothing. */
+function attachExtras(graph, extras) {
+  const seg = (extras && extras.seg) || {};
+  graph.extras = extras || null;
+  graph.attrs = new Map();
+  for (const [id, s] of graph.byId) graph.attrs.set(id, segmentAttrs(s, seg[id]));
+  return graph;
+}
+
+function buildWeights(prefs, opts) {
+  const on = (prefs && prefs.on) || {};
+  const w = { soft: {}, hardStairs: false, stairsSoft: false, turns: 0, crime: !!on.crime,
+              K: on.shorter ? 0.5 : 1, noLimit: !!on.further, soon: SOON_IDS.filter(id => on[id]) };
+  for (const id of Object.keys(SOFT_STRENGTH)) if (on[id]) w.soft[id] = SOFT_STRENGTH[id];
+  if (on.stairs) { if (opts && opts.relaxHard) w.stairsSoft = true; else w.hardStairs = true; }
+  if (on.turns) w.turns = TURN_M;
+  w.hasSoft = Object.keys(w.soft).length > 0 || w.turns > 0 || w.crime || w.stairsSoft;
+  return w;
+}
+const FASTEST_W = { soft: {}, hardStairs: false, stairsSoft: false, turns: 0, crime: false, K: 1 };
+
+// Recorded-crime cost per metre (only when the "recorded crime" button is on).
+// Based on the recorded count itself, spread over the segment's length (a short
+// street with many records costs more per metre than a long one with a few), so
+// the ranking agrees with the count shown on the route card. Segments are never
+// penalised for being unscored, only for crimes actually recorded on or near them.
+const CRIME_K = 6, CRIME_CAP = 150;
+function crimeAdd(seg) {
+  const c = seg.crime_count_90d || 0;
+  return c ? CRIME_K * Math.min(c, CRIME_CAP) / Math.max(seg.length_m || 0, 20) : 0;
+}
+
+/* Cost multiplier per segment id. f (0..1) scales how hard preferences pull;
+ * f = 0 keeps only hard rules. Infinity = blocked. */
+function buildCostTable(graph, w, f) {
+  const t = new Map(), S = w.soft;
+  for (const [id, seg] of graph.byId) {
+    const a = graph.attrs.get(id);
+    let add = 0;
+    if (S.lit) add += S.lit * (a.lit === "confirmed" ? 0 : a.lit === "assumed" ? 0.5 : a.lit === "unknown" ? 0.6 : 1);
+    if (S.parks) add += S.parks * a.park;
+    if (S.unpaved && a.unpaved === true) add += S.unpaved;
+    if (S.traffic && a.mainRoad) add += S.traffic;
+    if (S.shared && a.shared) add += S.shared * (a.shared === 2 ? 0.5 : 1);
+    if (S.underpass && a.underpass) add += S.underpass;
+    if (S.passage && a.passage) add += S.passage;
+    if (S.main && a.cls !== "main") add += S.main * (a.cls === "service" ? 0.5 : 1);
+    if (S.quiet && a.cls === "main") add += S.quiet;
+    if (S.nightlife && a.nightlife) add += S.nightlife * Math.min(1, a.nightlife / 6);
+    let m = 1 + SOFT_B * w.K * f * add;
+    if (w.stairsSoft && a.steps) m += STAIRS_SOFT * f;
+    if (w.crime) m += f * crimeAdd(seg);
+    if (a.cls === "service") m *= SERVICE_MULT;
+    if (w.hardStairs && a.steps) m = Infinity;
+    t.set(id, m);
+  }
+  return t;
+}
+
+function bearing(a, b) {
+  const r = Math.PI / 180;
+  return Math.atan2((b[1] - a[1]) * r * Math.cos(a[0] * r), (b[0] - a[0]) * r) / r;
+}
+/* A turn is a direction change of TURN_DEG or more at a junction (a node where
+ * the route could have gone elsewhere). Bends along a single way don't count. */
+function isTurn(graph, p, u, v) {
+  const nu = graph.nodes.get(u);
+  if (nu.adj.length < 3) return false;
+  let d = Math.abs(bearing(nu.c, graph.nodes.get(v).c) - bearing(graph.nodes.get(p).c, nu.c));
+  if (d > 180) d = 360 - d;
+  return d >= TURN_DEG;
+}
+function countTurns(graph, steps) {
+  let n = 0;
+  for (let i = 1; i < steps.length; i++) if (isTurn(graph, steps[i - 1].from, steps[i].from, steps[i].to)) n++;
+  return n;
+}
+
+/* A* over a cost table (multipliers are >= 1, so straight-line distance never
+ * overestimates). turnM > 0 adds a turn penalty, which needs one search state
+ * per (node, previous node). Returns { segments, chainLen, steps } or null. */
+function searchRoute(graph, startKey, destKey, table, turnM) {
+  const useTurns = turnM > 0;
+  const destC = graph.nodes.get(destKey).c;
+  const h = (k) => distM(graph.nodes.get(k).c, destC);
+  const s0 = useTurns ? startKey + ">" : startKey;
+  const dist = new Map([[s0, 0]]), prev = new Map(), done = new Set();
+  const heap = new MinHeap();
+  // heap items: [priority, state, node, previous node, cost so far, bearing we arrived on]
+  heap.push([h(startKey), s0, startKey, null, 0, 0]);
+  let endState = null;
+  while (heap.size) {
+    const [, st, u, pu, g, inB] = heap.pop();
+    if (done.has(st)) continue;
+    done.add(st);
+    if (u === destKey) { endState = st; break; }
+    const nu = graph.nodes.get(u);
+    const junction = nu.adj.length >= 3;        // only junctions can count as turns
+    for (const e of nu.adj) {
+      const m = table.get(e.seg);
+      if (m === Infinity) continue;
+      const ns = useTurns ? e.to + ">" + u : e.to;
+      if (done.has(ns)) continue;
+      let c = e.len * (m === undefined ? 1 : m);
+      if (useTurns) {
+        if (e.bear === undefined) e.bear = bearing(nu.c, graph.nodes.get(e.to).c);   // cached on the edge
+        if (pu !== null && junction) {
+          let d = Math.abs(e.bear - inB);
+          if (d > 180) d = 360 - d;
+          if (d >= TURN_DEG) c += turnM;
+        }
+      }
+      const ng = g + c;
+      if (ng < (dist.get(ns) ?? Infinity)) {
+        dist.set(ns, ng);
+        prev.set(ns, { st, from: u, to: e.to, seg: e.seg, len: e.len });
+        heap.push([ng + h(e.to), ns, e.to, u, ng, e.bear]);
+      }
+    }
+  }
+  if (!endState) return null;
+  const back = [];
+  for (let cur = endState; cur !== s0;) {
+    const p = prev.get(cur);
+    back.push({ from: p.from, to: p.to, seg: p.seg, len: p.len });
+    cur = p.st;
+  }
+  back.reverse();
+  const segments = [];
+  let chainLen = 0, lastSeg = null;
+  for (const st of back) {
+    chainLen += st.len;
+    if (st.seg !== lastSeg) { segments.push(graph.byId.get(st.seg)); lastSeg = st.seg; }
+  }
+  return { segments, chainLen, steps: back };
+}
+
+const minutesOf = (r) => r.chainLen / WALK_M_PER_MIN;
+const edgeKey = (s) => (s.from < s.to ? s.from + "|" + s.to : s.to + "|" + s.from);
+/* 0 = identical, 1 = nothing in common (share of the longer route's metres not shared). */
+function routeDistance(a, b) {
+  const kb = new Set(b.steps.map(edgeKey));
+  let shared = 0;
+  for (const s of a.steps) if (kb.has(edgeKey(s))) shared += s.len;
+  return 1 - shared / Math.max(a.chainLen, b.chainLen, 1);
+}
+
+/* Everything measurable about a route, in metres actually walked. */
+function analyseRoute(graph, route) {
+  const m = { lenM: route.chainLen, minutes: minutesOf(route),
+    cls: { main: 0, side: 0, path: 0, service: 0 }, lit: { confirmed: 0, assumed: 0, unknown: 0, no: 0 },
+    band: { low: 0, medium: 0, high: 0, unknown: 0 },
+    parkM: 0, stairsSegs: 0, stairsM: 0, unpavedM: 0, surfaceKnownM: 0, underpassM: 0, passageM: 0,
+    sharedM: 0, mainRoadM: 0, nightlifeM: 0, tideM: 0, crossings: 0,
+    turns: countTurns(graph, route.steps), crime90: 0, crimeTop: null };
+  const seen = new Set();
+  for (const st of route.steps) {
+    const seg = graph.byId.get(st.seg), a = graph.attrs.get(st.seg), L = st.len;
+    m.cls[a.cls] += L; m.lit[a.lit] += L; m.band[seg.risk_band] += L; m.parkM += L * a.park;
+    if (a.steps) m.stairsM += L;
+    if (a.unpaved !== null) { m.surfaceKnownM += L; if (a.unpaved) m.unpavedM += L; }
+    if (a.underpass) m.underpassM += L;
+    if (a.passage) m.passageM += L;
+    if (a.shared) m.sharedM += L;
+    if (a.mainRoad) m.mainRoadM += L;
+    if (a.nightlife >= 3) m.nightlifeM += L;
+    if (seg.tide_exposed) m.tideM += L;
+    if (!seen.has(st.seg)) {
+      seen.add(st.seg);
+      if (a.steps) m.stairsSegs++;
+      if (a.crossing) m.crossings++;
+      const c = seg.crime_count_90d || 0;
+      m.crime90 += c;
+      if (c > 0 && (!m.crimeTop || c > m.crimeTop.count)) {
+        m.crimeTop = { name: seg.name === "unnamed path" ? null : seg.name, count: c, month: seg.last_crime_month };
+      }
+    }
+  }
+  return m;
+}
+
+/* How well one route matches the buttons that are on. Each item:
+ * { id, label, status: matched | partly | unknown | missed | na, detail }.
+ * Built only from the route's own measurements, so it can't overclaim. */
+function buildReport(on, m, fm, ctx) {
+  const L = Math.max(m.lenM, 1), items = [];
+  const lab = (id) => (ctx.labels && ctx.labels[id]) || LABEL_FALLBACK[id] || id;
+  const add = (id, status, detail) => items.push({ id, label: lab(id), status, detail });
+  const pc = (x) => Math.round(x * 100) + "%";
+  const mn = (x) => Math.round(x);
+
+  if (on.lit) {
+    const conf = m.lit.confirmed / L, no = m.lit.no / L, unconf = (m.lit.assumed + m.lit.unknown) / L;
+    let d = `Lighting confirmed on ${pc(conf)} of this route` + (no >= 0.005 ? `, mapped as unlit on ${pc(no)}` : "") +
+      `; ${pc(unconf)} unconfirmed.`;
+    const status = no >= 0.1 ? "missed" : conf >= 0.8 ? "matched" : conf >= 0.4 ? "partly" : "unknown";
+    if (status === "unknown") d += " Unconfirmed isn't the same as dark.";
+    add("lit", status, d);
+  }
+  if (on.stairs) {
+    add("stairs", m.stairsSegs === 0 ? "matched" : "missed", m.stairsSegs === 0
+      ? "No known stairs on this route (based on mapped steps)."
+      : `Uses ${m.stairsSegs} set${m.stairsSegs > 1 ? "s" : ""} of mapped steps.`);
+  }
+  if (on.unpaved) {
+    const known = m.surfaceKnownM / L;
+    if (m.unpavedM >= 5) add("unpaved", m.unpavedM / L >= 0.1 ? "missed" : "partly", `${mn(m.unpavedM)} m is mapped as unpaved or uneven.`);
+    else if (known < 0.5) add("unpaved", "unknown", `Surface isn't mapped for most of this route (known for ${pc(known)}).`);
+    else add("unpaved", "matched", `No unpaved surface mapped (surface known for ${pc(known)}).`);
+  }
+  if (on.parks) {
+    const share = m.parkM / L;
+    let status = share <= 0.02 ? "matched" : m.parkM < fm.parkM * 0.5 ? "partly" : "missed";
+    let d = share <= 0.02 ? "No mapped green space on this route." : `${mn(m.parkM)} m is inside mapped green space.`;
+    if (share > 0.02 && ctx.parkProbe) {
+      if (ctx.parkProbe.parkM >= m.parkM * 0.9) d += " Every route we found uses about this much, so it can't be avoided on this journey.";
+      else if (ctx.limit !== null) d += ` Avoiding more would add about ${mn(ctx.parkProbe.extraMin)} min (your limit is ${ctx.limit}).`;
+    }
+    add("parks", status, d);
+  }
+  if (on.traffic) {
+    const s = m.mainRoadM / L;
+    add("traffic", s <= 0.05 ? "matched" : s >= 0.4 ? "missed" : "partly",
+      s <= 0.05 ? "No sections mapped beside main roads."
+        : `${pc(s)} runs beside a main road (estimated from distance, not measured traffic).`);
+  }
+  if (on.shared) add("shared", m.sharedM < 5 ? "matched" : "partly", m.sharedM < 5
+    ? "No shared walking and cycling paths mapped." : `${mn(m.sharedM)} m is on a shared walking and cycling path.`);
+  if (on.underpass) add("underpass", m.underpassM < 5 ? "matched" : "partly", m.underpassM < 5
+    ? "No underpasses mapped." : `${mn(m.underpassM)} m is in a mapped underpass.`);
+  if (on.passage) add("passage", m.passageM < 5 ? "matched" : "partly", m.passageM < 5
+    ? "No enclosed passages mapped." : `${mn(m.passageM)} m is in a mapped enclosed passage.`);
+  if (on.main) {
+    const s = m.cls.main / L;
+    add("main", s >= 0.6 ? "matched" : s >= 0.3 ? "partly" : "missed", `${pc(s)} of this route is on main roads.`);
+  }
+  if (on.quiet) {
+    const s = m.cls.main / L;
+    add("quiet", s <= 0.15 ? "matched" : s <= 0.4 ? "partly" : "missed", `${pc(s)} of this route is on main roads; the rest is side streets and paths.`);
+  }
+  if (on.nightlife) add("nightlife", m.nightlifeM < 5 ? "matched" : "partly", m.nightlifeM < 5
+    ? "Passes no mapped pubs, bars or clubs closely." : `${mn(m.nightlifeM)} m is near several mapped pubs, bars or clubs.`);
+  if (on.crime) {
+    const c = m.crime90, fc = fm.crime90;
+    const top = m.crimeTop ? `, most on or near ${m.crimeTop.name ? m.crimeTop.name : "an unnamed path"}` : "";
+    add("crime", c < fc ? "matched" : c === fc ? "partly" : "missed",
+      `${c} recorded street crime${c === 1 ? "" : "s"} on or near this route in the last 3 months${top} (whole streets, Police UK).`);
+  }
+  if (on.shorter) {
+    const ex = m.minutes - fm.minutes;
+    add("shorter", ex <= 1 ? "matched" : ex <= 3 ? "partly" : "missed",
+      ex <= 1 ? "About as quick as the fastest route." : `About ${mn(ex)} min longer than the fastest route.`);
+  }
+  if (on.turns) add("turns", m.turns <= fm.turns ? "matched" : "missed",
+    `${m.turns} turn${m.turns === 1 ? "" : "s"} at junctions (the fastest route has ${fm.turns}).`);
+  if (on.further) add("further", "matched", "No extra-time limit, so your other choices came first.");
+  for (const id of ctx.soon || []) add(id, "na", "Not applied yet: we don't have this data. Saved for later.");
+  return items;
+}
+
+/* The planner. prefs = { on:{...}, extraMin } from prefs.js (or null).
+ * opts: { relaxHard, labels }. Returns
+ *   { ok:true, routes:[{role,label,route,metrics,extraMin,report}], notes, limit }
+ *   { ok:false, reason:"no-route" }
+ *   { ok:false, reason:"requirement", unmet:[...] }  (e.g. no stairs-free route exists) */
+function planRoutes(graph, startKey, destKey, prefs, opts) {
+  opts = opts || {};
+  if (!graph.attrs) attachExtras(graph, null);
+  const p = prefs || {}, on = p.on || {};
+  const W = buildWeights(p, opts);
+  const limit = W.noLimit || p.extraMin === null ? null : (p.extraMin ?? DEFAULT_EXTRA_MIN);
+
+  const fastest = searchRoute(graph, startKey, destKey, buildCostTable(graph, FASTEST_W, 0), 0);
+  if (!fastest) return { ok: false, reason: "no-route", routes: [], notes: [], unmet: [] };
+  const fMin = minutesOf(fastest);
+  const extraOf = (r) => minutesOf(r) - fMin;
+  const fits = (r) => limit === null || extraOf(r) <= limit + 1e-9;
+  const notes = [];
+
+  // fastest route that still obeys the hard rule(s)
+  let constrained = fastest;
+  if (W.hardStairs) {
+    constrained = searchRoute(graph, startKey, destKey, buildCostTable(graph, W, 0), 0);
+    if (!constrained) return { ok: false, reason: "requirement", unmet: ["stairs"], routes: [], notes: [] };
+  }
+
+  // best match: the strongest preference pull that still fits the extra-time limit
+  let best = constrained, f = 0;
+  if (W.hasSoft) {
+    best = null;
+    for (const ff of LIMIT_FACTORS) {
+      const cand = ff === 0 ? constrained
+        : searchRoute(graph, startKey, destKey, buildCostTable(graph, W, ff), W.turns * ff);
+      if (cand && fits(cand)) { best = cand; f = ff; break; }
+    }
+    if (!best) { best = constrained; f = 0; }
+  }
+  const bestExceeds = !fits(best);
+
+  // alternative: a different way, found by discouraging the segments the others use
+  let alt = null;
+  const used = new Set([...best.steps, ...fastest.steps].map(s => s.seg));
+  const fa = f > 0 ? Math.min(f, 0.5) : (W.hasSoft ? 0.2 : 0);
+  for (const pen of [1.5, 3]) {
+    const tbl = buildCostTable(graph, W, fa);
+    for (const id of used) { const v = tbl.get(id); if (v !== Infinity) tbl.set(id, v * (1 + pen)); }
+    const cand = searchRoute(graph, startKey, destKey, tbl, 0);     // no turn penalty: it only needs to be a different way
+    if (cand && fits(cand) && routeDistance(cand, best) >= DISTINCT_MIN && routeDistance(cand, fastest) >= DISTINCT_MIN) {
+      alt = cand; break;
+    }
+  }
+
+  const same = routeDistance(best, fastest) < SAME_MAX;
+  const picks = same ? [{ role: "both", route: best }]
+    : [{ role: "best", route: best }, { role: "fastest", route: fastest }];
+  if (alt) picks.push({ role: "alt", route: alt });
+
+  const fm = analyseRoute(graph, fastest);
+  const routes = picks.map(pk => ({ role: pk.role, label: ROUTE_LABELS[pk.role], route: pk.route,
+    metrics: pk.route === fastest ? fm : analyseRoute(graph, pk.route) }));
+
+  // can parks be avoided at all on this journey? (only worth a search if they matter)
+  let parkProbe = null;
+  if (on.parks && routes.some(r => r.metrics.parkM > 20)) {
+    const pw = { ...FASTEST_W, soft: { parks: 20 }, hardStairs: W.hardStairs, K: 1 };
+    const pr = searchRoute(graph, startKey, destKey, buildCostTable(graph, pw, 1), 0);
+    if (pr) parkProbe = { parkM: analyseRoute(graph, pr).parkM, extraMin: extraOf(pr) };
+  }
+
+  const ctx = { limit, parkProbe, labels: opts.labels || {}, soon: W.soon };
+  for (const r of routes) {
+    r.extraMin = r.metrics.minutes - fm.minutes;
+    r.report = buildReport(on, r.metrics, fm, ctx);
+  }
+
+  if (bestExceeds) {
+    notes.push(`Meeting your "No stairs" requirement needs about ${Math.round(extraOf(best))} min extra, more than your ${limit}-minute limit. It's shown anyway because it's a requirement.`);
+  } else if (W.hasSoft && f === 0) {
+    notes.push(`Within your ${limit === null ? "no" : limit + "-minute"} extra-time limit, no route matches your choices better than the fastest.`);
+  } else if (W.hasSoft && f < 1) {
+    notes.push(`This is the best match within your ${limit}-minute extra-time limit; some choices are only partly met.`);
+  }
+  return { ok: true, routes, notes, limit };
+}
+
 /* ----------------------- plain-English explanation ---------------------
- * Template-based, deterministic: the same route always reads the same.
- * All crime numbers are real Police UK data (see entities/incidents.json).
+ * LEGACY text for the old Safest/Shortest/Balanced triad (kept for
+ * test_core.js; the app now uses planRoutes + the match list below).
+ * Template-based, deterministic. All crime numbers are real Police UK data.
+ * Returns HTML-SAFE text: street and place names are escaped, so the result
+ * can go into innerHTML. Safety and honesty notes come first and are never
+ * cut; lower-priority lines (crime counts, havens) are dropped first.
  * --------------------------------------------------------------------- */
 function explain(route, altRoutes, crimes, havens, label) {
   const st = routeStats(route);
@@ -196,7 +618,7 @@ function explain(route, altRoutes, crimes, havens, label) {
   const shortest = altRoutes.find(r => r.label === "Shortest");
   if (shortest && label !== "Shortest") {
     const dMin = Math.round(st.minutes - routeStats(shortest.route).minutes);
-    const lead = label === "Safest" ? "Takes the lit streets" : "Balances distance and safety";
+    const lead = label === "Safest" ? "Prefers streets with confirmed lighting" : "Balances distance and recorded crime";
     parts.push(dMin < 3
       ? `${lead}, for much the same walking time as the shortest option.`
       : `${lead}; about ${dMin} min longer than the shortest option.`);
@@ -206,44 +628,27 @@ function explain(route, altRoutes, crimes, havens, label) {
 
   // what this route avoids vs the shortest route
   if (shortest && label !== "Shortest") {
-    const shortIds = new Set(shortest.route.segments.map(s => s.id));
     const avoided = shortest.route.segments.filter(s => !segIds.has(s.id) &&
       (s.risk_band === "high" || s.risk_band === "unknown"));
     if (avoided.length) {
       const s = avoided[0];
       const what = s.lighting === "no" ? "unlit" :
         (s.lighting === "unknown" ? "no-lighting-data" : "higher-risk");
-      const nm = s.name === "unnamed path" ? "path" : s.name +
+      const nm = s.name === "unnamed path" ? "path" : esc(s.name) +
         ((s.highway_type === "footway" || s.highway_type === "path") ? " path" : "");
       parts.push(`Avoids the ${what} ${nm}.`);
     }
   }
 
-  // real crime history on this route (Police UK)
-  const withCrime = route.segments.filter(s => s.crime_count_90d > 0)
-    .sort((a, b) => b.crime_count_90d - a.crime_count_90d);
-  if (withCrime.length) {
-    const s = withCrime[0];
-    const nm = s.name === "unnamed path" ? "this route" : s.name;
-    parts.push(`${s.crime_count_90d} street crimes were reported on or near ` +
-      `${nm} in the last 3 months (Police UK, to ${s.last_crime_month}).`);
-  }
-
-  // unknowns — the honesty case
+  // unknowns: the honesty case (kept ahead of the optional lines)
   if (st.unknownCount > 0) {
     parts.push(`${st.unknownCount} segment${st.unknownCount > 1 ? "s" : ""} on this ` +
       `route have no lighting data — risk unknown there.`);
   }
 
-  // safe havens
-  const near = havens.filter(h => route.segments.some(s =>
-    s.coordinates.some(c => distM(c, [h.lat, h.lng]) < 150)));
-  const haven = near.find(h => /24\/7/.test(h.hours)) || near[0];
-  if (haven) parts.push(`Passes ${haven.name}${/24\/7/.test(haven.hours) ? " (staffed 24/7)" : ""}.`);
-
   // tidal paths
   const tidal = route.segments.find(s => s.tide_exposed);
-  if (tidal) parts.push("Uses a tidal waterside path that can flood at high tide.");
+  if (tidal) parts.push("Part of this route is near tidal water, where low-lying paths can flood at high tide.");
 
   // honesty: if the safest option doesn't actually reduce exposure, say so
   if (label === "Safest" && shortest) {
@@ -252,7 +657,23 @@ function explain(route, altRoutes, crimes, havens, label) {
       parts.push("In this area reported crime is similar on all reasonable options — Athena cannot reduce it further here.");
   }
 
-  return parts.slice(0, 3).join(" ");
+  // real crime history on this route (Police UK)
+  const withCrime = route.segments.filter(s => s.crime_count_90d > 0)
+    .sort((a, b) => b.crime_count_90d - a.crime_count_90d);
+  if (withCrime.length) {
+    const s = withCrime[0];
+    const nm = s.name === "unnamed path" ? "this route" : esc(s.name);
+    parts.push(`${s.crime_count_90d} street crime${s.crime_count_90d > 1 ? "s were" : " was"} reported on or near ` +
+      `${nm} in the last 3 months (Police UK, to ${esc(s.last_crime_month)}).`);
+  }
+
+  // safe havens (lowest priority)
+  const near = havens.filter(h => route.segments.some(s =>
+    s.coordinates.some(c => distM(c, [h.lat, h.lng]) < 150)));
+  const haven = near.find(h => /24\/7/.test(h.hours)) || near[0];
+  if (haven) parts.push(`Passes ${esc(haven.name)}${/24\/7/.test(haven.hours) ? " (listed as staffed 24/7)" : ""}.`);
+
+  return parts.slice(0, 5).join(" ");
 }
 
 function gmapsUrl(route, origin, dest, graph) {
@@ -273,20 +694,35 @@ function gmapsUrl(route, origin, dest, graph) {
 if (typeof module !== "undefined") {
   module.exports = { buildGraph, snap, findRoute, routeStats, explain,
                      gmapsUrl, distM, PRESETS, PROFILES, MAX_EXTRA_MIN,
-                     planTriad };
+                     planTriad, attachExtras, segmentAttrs, buildWeights, buildCostTable,
+                     searchRoute, analyseRoute, buildReport, planRoutes, routeDistance,
+                     countTurns, ROUTE_LABELS, SOON_IDS, DEFAULT_EXTRA_MIN };
 }
 
 /* ============================ browser UI =============================== */
 if (typeof document !== "undefined") (async function () {
   const $ = (id) => document.getElementById(id);
   const load = (p) => fetch(p).then(r => r.json());
-  const [segments, crimes, havens, model, liveSnapshot, manifest, basemap] = await Promise.all([
+  const [segments, crimes, havens, model, liveSnapshot, manifest, basemap, extras] = await Promise.all([
     load("data/path_segments.json"), load("data/incidents.json"),
     load("data/safe_havens.json"), load("data/model.json").catch(() => null),
     load("data/live_check.json").catch(() => null),
     load("data/data_manifest.json").catch(() => null),
     load("data/basemap.geojson").catch(() => null),
+    load("data/segment_extras.json").catch(() => null),     // preference data; routes still work without it
   ]);
+  // tiny DOM helper: text goes in as text nodes, never as HTML
+  const h = (tag, attrs, ...kids) => {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (v == null || v === false) continue;
+      if (k === "class") el.className = v;
+      else if (k.startsWith("on") && typeof v === "function") el.addEventListener(k.slice(2), v);
+      else el.setAttribute(k, v === true ? "" : v);
+    }
+    for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid);
+    return el;
+  };
 
   /* map */
   const map = L.map("map", { preferCanvas: true, zoomControl: true }).setView([50.9195, -1.4045], 13);
@@ -457,14 +893,14 @@ if (typeof document !== "undefined") (async function () {
     }).addTo(map);
     if (clickCount === 0) clickStart = [e.latlng.lat, e.latlng.lng];
     else {
-      planRoute(clickStart, [e.latlng.lat, e.latlng.lng]);
+      planRoute(clickStart, [e.latlng.lat, e.latlng.lng], undefined, false);
       clickCount = -1;
     }
     clickCount++;
   });
 
   /* routing */
-  const graph = buildGraph(segments);
+  const graph = attachExtras(buildGraph(segments), extras);
   let routeLayers = [];
   let routeLines = [], routeCards = [], selected = -1;
 
@@ -500,57 +936,122 @@ if (typeof document !== "undefined") (async function () {
     planMarkers = [mk(fromLL, "A", aLabel), mk(toLL, "B", bLabel)];
   }
 
-  async function planRoute(fromLL, toLL, destName) {
+  /* ------------------------------ route cards ------------------------------ */
+  const STATUS = { matched: ["✓", "Matched"], partly: ["~", "Partly"], unknown: ["?", "Unknown"],
+                   missed: ["✗", "Not met"], na: ["–", "Not applied"] };
+  const toggleLabels = Object.fromEntries(
+    (window.OdysseyPrefs ? window.OdysseyPrefs.TOGGLES : []).map(t => [t.id, t.label]));
+  const dataBuilt = manifest && manifest.generated_at
+    ? new Date(manifest.generated_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : null;
+  let lastPlan = null;           // remembered so changing preferences can re-plan the same trip
+
+  const pctOf = (x, L) => Math.round(100 * x / Math.max(L, 1)) + "%";
+
+  function summaryLine(r) {
+    const c = { matched: 0, partly: 0, unknown: 0, missed: 0 };
+    r.report.forEach(i => { if (c[i.status] !== undefined) c[i.status]++; });
+    const n = c.matched + c.partly + c.unknown + c.missed;
+    if (!n) return "Turn on preferences with the ⚙ button to see how each route matches them.";
+    return `${c.matched} of ${n} choices matched` + (c.partly ? `, ${c.partly} partly` : "") +
+      (c.unknown ? `, ${c.unknown} unknown` : "") + (c.missed ? `, ${c.missed} not met` : "") + ".";
+  }
+
+  function matchList(r) {
+    if (!r.report.length) return null;
+    return h("ul", { class: "match-list" }, ...r.report.map(i => h("li", { class: `match-item st-${i.status}` },
+      h("span", { class: "mi-icon", "aria-hidden": "true" }, STATUS[i.status][0]),
+      h("span", { class: "mi-body" },
+        h("b", { class: "mi-label" }, i.label), " ",
+        h("span", { class: "mi-word" }, STATUS[i.status][1]),
+        h("span", { class: "mi-detail" }, i.detail)))));
+  }
+
+  /* Recorded crime stays information here; it only changes ranking when the
+   * "recorded crime" button is on. */
+  function infoBlock(r) {
+    const m = r.metrics, L = m.lenM;
+    const kids = [h("summary", {}, "Route details and recorded crime (info only)")];
+    const crime = m.crime90
+      ? `${m.crime90} street crime${m.crime90 === 1 ? " was" : "s were"} recorded on or near this route in the last 3 months` +
+        (m.crimeTop ? `; most on or near ${m.crimeTop.name || "an unnamed path"} (Police UK, to ${m.crimeTop.month})` : "") + "."
+      : "No street crimes were recorded on or near this route in the last 3 months.";
+    kids.push(h("p", {}, crime));
+    kids.push(h("p", {}, `Athena's risk bands by distance: ${pctOf(m.band.low, L)} lower, ${pctOf(m.band.medium, L)} medium, ` +
+      `${pctOf(m.band.high, L)} higher, ${pctOf(m.band.unknown, L)} not scored. Bands are relative to other streets, ` +
+      "and not scored doesn't mean safe."));
+    kids.push(h("p", { class: "hint" }, "Counts cover whole streets, aren't live, and don't show time of day."));
+    if (m.tideM > 0) kids.push(h("p", {}, "Part of this route is near tidal water, where low-lying paths can flood at high tide."));
+    if (dataBuilt) kids.push(h("p", { class: "hint" }, `Map data built ${dataBuilt}.`));
+    return h("details", { class: "info-block" }, ...kids);
+  }
+
+  function buildCard(r, idx, c) {
+    const m = r.metrics;
+    const extra = r.role === "fastest" ? "" : (Math.round(r.extraMin) >= 1 ? ` · +${Math.round(r.extraMin)} min vs fastest` : " · same time as fastest");
+    const card = h("div", { class: "route-card" + (idx === 0 ? " best" : "") },
+      h("div", { class: "route-head" }, h("span", { class: "route-title" }, r.label)),
+      h("div", { class: "route-meta" }, h("b", {}, `ETA ${etaTime(m.minutes, c.departAt)}`),
+        ` · ${Math.round(m.minutes)} min · ${(m.lenM / 1000).toFixed(1)} km${extra}`),
+      h("p", { class: "route-explain" }, summaryLine(r)),
+      matchList(r));
+    if (idx === 0 && window.OdysseyRides) {
+      const reasons = window.OdysseyRides.rideReasons(m, c.prefs, c.departAt);
+      if (reasons.length) {
+        card.append(window.OdysseyRides.banner(reasons, (e) => window.OdysseyRides.openSheet({
+          from: c.fromLL, to: c.toLL, destName: c.destName, fromIsGps: c.fromIsGps,
+          shareUrl: gmapsUrl(r.route, c.fromLL, c.toLL, graph),
+        })));
+      }
+    }
+    card.append(infoBlock(r),
+      h("div", { class: "route-actions" },
+        h("button", { class: "choose", "data-i": String(idx) }, "Choose this route"),
+        h("a", { class: "gmaps", target: "_blank", rel: "noopener noreferrer", href: gmapsUrl(r.route, c.fromLL, c.toLL, graph) }, "Open in Google Maps"),
+        h("button", { class: "report", "data-i": String(idx) }, "Report this route")),
+      h("p", { class: "report-msg hidden", id: `msg-${idx}` },
+        "Thanks. Saved on this device only; nothing is sent anywhere."));
+    return card;
+  }
+
+  async function planRoute(fromLL, toLL, destName, fromIsGps, relaxHard) {
     clearRouteLayers();
+    lastPlan = { fromLL, toLL, destName, fromIsGps, relaxHard: !!relaxHard };
     const routesEl = $("routes");
     routesEl.classList.remove("hidden");
-    routesEl.innerHTML = "<p class='hint'>Athena is scoring routes…</p>";
+    routesEl.replaceChildren(h("p", { class: "hint" }, "Athena is scoring routes…"));
 
-    setPlanMarkers(fromLL, toLL, "Your location", destName);
+    setPlanMarkers(fromLL, toLL, fromIsGps ? "Your location" : "Start", destName);
+    // let the message paint before the search blocks the page
+    await new Promise(res => requestAnimationFrame(() => setTimeout(res, 0)));
     const a = snap(graph, fromLL), b = snap(graph, toLL);
     if (a.dist > 400 || b.dist > 400) {
-      routesEl.innerHTML = "<p class='hint'>Start or destination is too far from the walking network — pick a point nearer a street or path.</p>";
+      routesEl.replaceChildren(h("p", { class: "hint" }, "Start or destination is too far from the walking network — pick a point nearer a street or path."));
       return;
     }
-    const triad = planTriad(graph, a.key, b.key);
-    const results = [];
-    if (triad.safest) results.push({ label: "Safest", profile: "safest", route: triad.safest, note: triad.safestNote });
-    if (triad.shortest) results.push({ label: "Shortest", profile: "shortest", route: triad.shortest });
-    if (triad.balanced) results.push({ label: "Balanced", profile: "balanced", route: triad.balanced });
-    if (!results.length) {
-      routesEl.innerHTML = "<p class='hint'>No walking route found between those points.</p>";
+    const prefs = window.OdysseyQuestionnaire ? window.OdysseyQuestionnaire.getPrefs() : null;
+    const plan = planRoutes(graph, a.key, b.key, prefs, { labels: toggleLabels, relaxHard });
+    if (!plan.ok) {
+      if (plan.reason === "requirement") {
+        routesEl.replaceChildren(h("div", { class: "route-card" },
+          h("p", { class: "route-explain" }, `We cannot confirm a route that meets this requirement: ${toggleLabels.stairs || "No stairs"}.`),
+          h("p", { class: "hint" }, "Every walking route we found between these points uses known stairs. " +
+            "You can turn the requirement off with the ⚙ button, or see the routes anyway and check which choices they don't meet."),
+          h("div", { class: "route-actions" },
+            h("button", { onclick: () => planRoute(fromLL, toLL, destName, fromIsGps, true) }, "Show routes anyway"))));
+      } else {
+        routesEl.replaceChildren(h("p", { class: "hint" }, "No walking route found between those points."));
+      }
       return;
     }
-    const uniq = [];
-    for (const r of results) {
-      if (!uniq.some(u => u.route.segments.map(s => s.id).join()
-                       === r.route.segments.map(s => s.id).join())) uniq.push(r);
-    }
 
-    routesEl.innerHTML = "";
-    // start time from the questionnaire (falls back to now if it isn't loaded)
-    const departAt = window.OdysseyQuestionnaire ? window.OdysseyQuestionnaire.departureMs() : Date.now();
-    uniq.forEach((r, idx) => {
-      const st = routeStats(r.route);
-      const text = [r.note, explain(r.route, uniq, crimes, havens, r.label)]
-        .filter(Boolean).join(" ");
-      const isBest = st.band === "low" || (idx === 0 && r.label === "Safest");
-
-      const card = document.createElement("div");
-      card.className = "route-card" + (isBest ? " best" : "");
-      card.innerHTML =
-        `<div class="route-head"><span class="route-title">${r.label}</span>` +
-        `<span class="badge ${st.band}">${st.band === "unknown" ? "risk unknown" : st.band + " risk"}</span></div>` +
-        `<div class="route-meta"><b>ETA ${etaTime(st.minutes, departAt)}</b> · ${Math.round(st.minutes)} min · ${(st.len / 1000).toFixed(1)} km` +
-        (st.unknownCount ? ` · ${st.unknownCount} unscored` : "") + `</div>` +
-        `<p class="route-explain">${text}</p>` +
-        `<div class="route-actions">` +
-        `<button class="choose" data-i="${idx}">Choose this route</button>` +
-        `<a class="gmaps" target="_blank" href="${gmapsUrl(r.route, fromLL, toLL, graph)}">Open in Google Maps</a>` +
-        `<button class="report" data-i="${idx}">Report this route</button></div>` +
-        `<p class="report-msg hidden" id="msg-${idx}">Thanks — saved. Athena retrains on monthly Police UK data; your report is kept for the next retrain.</p>`;
+    routesEl.replaceChildren();
+    if (relaxHard) routesEl.append(h("p", { class: "hint plan-note" }, "These routes don't fully meet “No stairs”. Check each card to see which choices they miss."));
+    plan.notes.forEach(n => routesEl.append(h("p", { class: "hint plan-note" }, n)));
+    const ctx = { prefs, departAt: window.OdysseyQuestionnaire ? window.OdysseyQuestionnaire.departureMs() : Date.now(),
+      fromLL, toLL, destName, fromIsGps };
+    plan.routes.forEach((r, idx) => {
+      const card = buildCard(r, idx, ctx);
       routesEl.appendChild(card);
-
       const pts = [graph.nodes.get(r.route.steps[0].from).c]
         .concat(r.route.steps.map(st => graph.nodes.get(st.to).c));
       routeLayers.push(L.polyline(pts, { color: "#0b1220", weight: 9, opacity: 0.6 }).addTo(map));
@@ -563,24 +1064,31 @@ if (typeof document !== "undefined") (async function () {
       routeCards[idx] = card;
     });
     selectRoute(0);
-    map.fitBounds(routeLayers[routeLayers.length - 1].getBounds(), { padding: [40, 40] });
+    map.fitBounds(L.featureGroup(routeLines).getBounds(), { padding: [40, 40] });
 
     routesEl.querySelectorAll(".choose").forEach(btn =>
       btn.addEventListener("click", () => selectRoute(+btn.dataset.i)));
     routesEl.querySelectorAll(".report").forEach(btn =>
       btn.addEventListener("click", () => {
-        const r = uniq[+btn.dataset.i];
-        const reports = JSON.parse(localStorage.getItem("odyssey_reports") || "[]");
-        reports.push({
-          ts: new Date().toISOString(),
-          route_label: r.label,
-          segment_ids: r.route.segments.map(s => s.id),
-          band: routeStats(r.route).band,
-        });
-        localStorage.setItem("odyssey_reports", JSON.stringify(reports));
+        const r = plan.routes[+btn.dataset.i];
+        let reports = [];
+        try { reports = JSON.parse(localStorage.getItem("odyssey_reports") || "[]"); } catch (e) { reports = []; }
+        reports.push({ ts: new Date().toISOString(), route_label: r.label, segment_ids: r.route.segments.map(s => s.id) });
+        try { localStorage.setItem("odyssey_reports", JSON.stringify(reports)); } catch (e) { /* storage blocked */ }
         $("msg-" + btn.dataset.i).classList.remove("hidden");
         btn.disabled = true;
       }));
+  }
+
+  // changing preferences re-plans the trip on screen
+  if (window.OdysseyQuestionnaire && window.OdysseyQuestionnaire.onChange) {
+    window.OdysseyQuestionnaire.onChange((p) => {
+      if (lastPlan && !$("routes").classList.contains("hidden")) {
+        // keep "Show routes anyway" only while "No stairs" is still on
+        planRoute(lastPlan.fromLL, lastPlan.toLL, lastPlan.destName, lastPlan.fromIsGps,
+          lastPlan.relaxHard && !!(p && p.on && p.on.stairs));
+      }
+    });
   }
 
   /* the core flow: type where you're going, start from where you are */
@@ -601,7 +1109,7 @@ if (typeof document !== "undefined") (async function () {
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         setStatus(`Heading to ${destName} — Athena is scoring routes…`);
-        planRoute([pos.coords.latitude, pos.coords.longitude], destLL, destName);
+        planRoute([pos.coords.latitude, pos.coords.longitude], destLL, destName, true);
       },
       (err) => {
         setStatus("GPS unavailable (" + err.message + ") — click two points on the map: first your start, then your destination.");

@@ -7,13 +7,30 @@ http://localhost:8000. No backend, no accounts, no keys.
   (green low / amber medium / red high / grey-dashed = no lighting data, never
   scored). Click a segment for lighting, real Police UK crime history
   (categories + months), isolation, tide exposure, and sources.
-- **Routing:** Safest / Shortest / Balanced. Athena's Dijkstra consumes the
-  model's continuous risk probability per segment, with a 12-minute detour
-  bound — and says so when a corridor offers no real safety gain.
+- **Route preferences:** one question, "What matters on this walk?", made of
+  on/off buttons (lighting, no stairs, parks, main or quiet streets, fewer
+  turns, recorded crime, and more). On = the planner takes it into account.
+  Saved on the device only (`prefs.js`, `questionnaire.js`); change it any
+  time with the ⚙ button. "No stairs" is strict, the rest are preferences,
+  and buttons marked "Coming soon" are saved but not used yet.
+- **Routing:** `planRoutes` in `app.js` returns up to three different routes
+  (Best match / Fastest / Alternative; names live in `ROUTE_LABELS`), inside
+  your extra-time limit. Each card has a match list built from the metres
+  actually walked (matched / partly / unknown / not met), so it can't
+  overclaim. Recorded crime is shown as info and only changes ranking when its
+  button is on. Needs `data/segment_extras.json` (parks, surfaces, shared
+  paths, underpasses, main-road distance); without it those buttons find nothing.
+- **Ride suggestion:** long walks, late-night walks with little confirmed
+  lighting, or a route with a lot of the highest recorded-crime band show a
+  neutral banner that opens a sheet: Uber (trip pre-filled), Bolt (site only,
+  no public pre-fill link) and a share link (`rides.js`). No keys or server.
 - **Live:** the panel fetches the real-time Environment Agency tide gauge at
   Woolston and active flood warnings directly in your browser.
 - **Handoff:** one tap opens the exact route in Google Maps with waypoints.
 - **SOS:** 999 / 101 dial buttons, copy-my-location, official guidance links.
+- **Tests:** `node test_plan.js` checks the planner (all 45 preset pairs under
+  20 button combinations), the preferences and the ride rules; run both from
+  this folder.
 - **Honesty:** `node test_core.js` verifies routes on the real data;
   `data/data_manifest.json` lists every source with its licence and fetch
   date; `data/model.json` is the full model card (AUC 0.971 vs 0.866
