@@ -178,8 +178,9 @@ function planTriad(graph, startKey, destKey) {
   return { shortest, safest, safestNote, balanced };
 }
 
-function etaTime(minutes) {
-  return new Date(Date.now() + minutes * 60000)
+// base = epoch ms the walk starts from (the questionnaire's start time); default now
+function etaTime(minutes, base) {
+  return new Date((base ?? Date.now()) + minutes * 60000)
     .toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 }
 
@@ -527,6 +528,8 @@ if (typeof document !== "undefined") (async function () {
     }
 
     routesEl.innerHTML = "";
+    // start time from the questionnaire (falls back to now if it isn't loaded)
+    const departAt = window.OdysseyQuestionnaire ? window.OdysseyQuestionnaire.departureMs() : Date.now();
     uniq.forEach((r, idx) => {
       const st = routeStats(r.route);
       const text = [r.note, explain(r.route, uniq, crimes, havens, r.label)]
@@ -538,7 +541,7 @@ if (typeof document !== "undefined") (async function () {
       card.innerHTML =
         `<div class="route-head"><span class="route-title">${r.label}</span>` +
         `<span class="badge ${st.band}">${st.band === "unknown" ? "risk unknown" : st.band + " risk"}</span></div>` +
-        `<div class="route-meta"><b>ETA ${etaTime(st.minutes)}</b> · ${Math.round(st.minutes)} min · ${(st.len / 1000).toFixed(1)} km` +
+        `<div class="route-meta"><b>ETA ${etaTime(st.minutes, departAt)}</b> · ${Math.round(st.minutes)} min · ${(st.len / 1000).toFixed(1)} km` +
         (st.unknownCount ? ` · ${st.unknownCount} unscored` : "") + `</div>` +
         `<p class="route-explain">${text}</p>` +
         `<div class="route-actions">` +

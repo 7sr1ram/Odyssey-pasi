@@ -6,13 +6,19 @@
 <title>Odyssey — Southampton</title>
 <link rel="stylesheet" href="vendor/leaflet.css">
 <link rel="stylesheet" href="style.css?v=3">
+<link rel="stylesheet" href="questionnaire.css?v=1">
 </head>
 <body>
 <div id="app">
   <aside id="panel">
-    <header>
-      <h1>Odyssey</h1>
-      <p class="tagline">Safest walking routes at night — Southampton · navigation by Athena</p>
+    <header class="app-head">
+      <div>
+        <h1>Odyssey</h1>
+        <p class="tagline">Safest walking routes at night — Southampton · navigation by Athena</p>
+      </div>
+      <button id="prefs-open" type="button" class="icon-btn" aria-label="Route preferences" title="Route preferences">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
     </header>
 
     <section id="trip-form">
@@ -22,6 +28,8 @@
       <p class="hint">Starts from your GPS location. No signal? Click two points on the map instead (start, then destination).</p>
       <p class="status" id="status"></p>
     </section>
+
+    <section id="prefs-card" aria-live="polite"></section>
 
     <section id="routes" class="hidden"></section>
 
@@ -65,6 +73,8 @@
   </div>
 </div>
 <script src="vendor/leaflet.js"></script>
-<script src="app.js?v=3"></script>
+<script src="prefs.js?v=1"></script>
+<script src="questionnaire.js?v=1"></script>
+<script src="app.js?v=4"></script>
 </body>
 </html>
