@@ -159,6 +159,72 @@ def fetch_nightlife():
             time.sleep(10)
     return {"elements": []}          # feature degrades to 0, model still works
 
+def fetch_basemap():
+    """Map context for the app's GeoJSON basemap: water, green space, rail.
+    Replaces third-party raster tiles — the app ships its own basemap."""
+    q = ('[out:json][timeout:300];area(3600127864)->.a;(\n'
+         'way(area.a)["natural"="water"];'
+         'way(area.a)["waterway"="riverbank"];'
+         'way(area.a)["landuse"~"^(reservoir|basin)$"];'
+         'relation(area.a)["natural"="water"];'
+         'way(area.a)["leisure"~"^(park|garden|nature_reserve|common)$"];'
+         'relation(area.a)["leisure"~"^(park|garden|nature_reserve|common)$"];'
+         'way(area.a)["landuse"~"^(forest|grass|meadow|recreation_ground|cemetery|allotments)$"];'
+         'way(area.a)["natural"~"^(wood|scrub|heath|wetland)$"];'
+         'way(area.a)["railway"~"^(rail|light_rail)$"];\n);out geom;')
+    last = None
+    for _ in range(3):
+        try:
+            req = urllib.request.Request(OVERPASS_URL, data=q.encode(),
+                                         headers={"User-Agent": USER_AGENT})
+            return json.load(urllib.request.urlopen(req, timeout=300))
+        except Exception as e:
+            last = e
+            time.sleep(10)
+    raise SystemExit(f"Overpass unreachable after 3 tries: {last}")
+
+def build_basemap(overpass):
+    """Overpass elements -> compact GeoJSON: {kind: water|green|rail}."""
+    feats = []
+    def coords(el):
+        return [[round(g["lon"], 5), round(g["lat"], 5)]
+                for g in el.get("geometry", []) if "lat" in g]
+
+    def add(kind, c, closed_ok=True):
+        if len(c) < 2:
+            return
+        is_closed = closed_ok and len(c) > 3 and c[0] == c[-1]
+        feats.append({
+            "type": "Feature",
+            "properties": {"kind": kind},
+            "geometry": {"type": "Polygon" if is_closed else "LineString",
+                         "coordinates": [c] if is_closed else c},
+        })
+
+    for el in overpass.get("elements", []):
+        t = el.get("type")
+        if t == "way":
+            tags = el.get("tags", {})
+            if "railway" in tags:
+                add("rail", coords(el), closed_ok=False)
+            elif tags.get("natural") == "water" or "waterway" in tags \
+                    or tags.get("landuse") in ("reservoir", "basin"):
+                add("water", coords(el))
+            else:
+                add("green", coords(el))
+        elif t == "relation":
+            # multipolygon: render outer member ways as filled polygons
+            for m in el.get("members", []):
+                if m.get("type") == "way" and m.get("role") in ("", "outer") \
+                        and m.get("geometry"):
+                    c = [[round(g["lon"], 5), round(g["lat"], 5)]
+                         for g in m["geometry"] if "lat" in g]
+                    add("water" if el.get("tags", {}).get("natural") == "water"
+                        else "green", c)
+    return {"type": "FeatureCollection",
+            "attribution": "(c) OpenStreetMap contributors, ODbL",
+            "features": feats}
+
 def lighting_of(tags):
     lit = tags.get("lit")
     if lit in ("yes", "24/7", "sunset-sunrise"):
@@ -602,20 +668,28 @@ def main():
                                     "licence": licence, "fetched_at": NOW_ISO,
                                     **extra})
 
-    print("1/6 loading OSM walking network ...")
+    print("1/8 loading OSM walking network ...")
     osm = cache_fetch("osm", fetch_osm, args.offline)
     ways = [e for e in osm["elements"] if e["type"] == "way" and "geometry" in e]
     print(f"   {len(ways)} raw ways")
     nightlife = cache_fetch("nightlife", fetch_nightlife, args.offline)
     print(f"   {len(nightlife.get('elements', []))} nightlife venues")
 
-    print("2/6 building segments ...")
+    print("2/8 building GeoJSON basemap (water, green, rail) ...")
+    overpass_basemap = cache_fetch("basemap", fetch_basemap, args.offline)
+    basemap = build_basemap(overpass_basemap)
+    print(f"   {len(basemap['features'])} basemap features")
+    M("OpenStreetMap basemap (water/green/rail)", OVERPASS_URL,
+      "ODbL 1.0, (c) OSM contributors",
+      features=len(basemap["features"]))
+
+    print("3/8 building segments ...")
     segs = build_segments(ways, args, nightlife)
     print(f"   {len(segs)} segments")
     M("OpenStreetMap walking network", OVERPASS_URL, "ODbL 1.0, (c) OSM contributors",
       coverage=f"{len(segs)} segments")
 
-    print("3/6 fetching real Police UK street crime ...")
+    print("4/8 fetching real Police UK street crime ...")
     crimes = cache_fetch("police", fetch_police, args.offline)
     print(f"   {len(crimes)} unique crimes")
     crimes = snap_crimes(segs, crimes)
@@ -625,10 +699,10 @@ def main():
       "Open Government Licence v3 (data.police.uk)", months=months,
       crimes=len(crimes))
 
-    print("4/6 tallying crime per segment ...")
+    print("5/8 tallying crime per segment ...")
     per_month = tally_crimes(segs, crimes)
 
-    print("5/6 training the Athena risk model ...")
+    print("6/8 training the Athena risk model ...")
     havens = [dict(h) for h in SAFE_HAVENS]
     model, preds = train_model(segs, per_month, havens, months, args.offline)
 
@@ -656,7 +730,7 @@ def main():
         h["segment_id"] = near["id"]
         h["source"] = "curated (hours hand-checked Oct 2026)"
 
-    print("6/6 live sources + outputs ...")
+    print("7/8 live sources + outputs ...")
     live = fetch_ea_live()
     M("EA flood monitoring (live gauge + warnings)",
       f"{EA_BASE}/id/stations/{EA_TIDE_GAUGE}", "OGL v3",
@@ -678,6 +752,8 @@ def main():
         json.dump(model or {"status": "untrained — insufficient months"}, f, indent=2)
     with open("entities/live_check.json", "w") as f:
         json.dump(live, f, indent=2)
+    with open("entities/basemap.geojson", "w") as f:
+        json.dump(basemap, f, separators=(",", ":"))
     with open("entities/data_manifest.json", "w") as f:
         json.dump(manifest, f, indent=2)
 

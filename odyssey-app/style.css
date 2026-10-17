@@ -110,3 +110,45 @@ button.secondary { background: transparent; color: var(--text); border: 1px soli
 
 /* plan-flow status line */
 #status { min-height: 1.2em; color: var(--muted); font-size: 0.9em; margin: 8px 0 0; }
+
+/* ---- GeoJSON basemap ---- */
+#map { background: #0a0d12; }
+.locate-btn {
+  width: 44px; height: 44px; border-radius: 10px; cursor: pointer;
+  background: var(--panel); color: var(--accent);
+  border: 1px solid var(--border); display: flex;
+  align-items: center; justify-content: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+.locate-btn:hover { filter: brightness(1.25); }
+.locate-btn.busy { color: var(--muted); }
+
+/* ---- mobile-first pass ---- */
+#dest {
+  width: 100%; padding: 12px 14px; font-size: 16px;   /* 16px stops iOS focus-zoom */
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+}
+button { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+
+@media (max-width: 720px) {
+  /* map on top, panel as a scrollable sheet below */
+  #app { flex-direction: column-reverse; }
+  #panel {
+    width: 100%; min-width: 0; max-height: 46vh;
+    border-right: 0; border-top: 1px solid var(--border);
+    padding: 14px 14px calc(16px + env(safe-area-inset-bottom));
+  }
+  #map { flex: 1; min-height: 54vh; }
+  #panel h1 { font-size: 22px; }
+  .tagline { font-size: 12px; margin-bottom: 12px; }
+  #plan { min-height: 50px; font-size: 16px; margin-top: 10px; }
+  .route-actions a, .route-actions button { padding: 13px 7px; }
+  #sos-open {
+    bottom: calc(46vh + 18px); right: 12px;
+    width: 64px; height: 64px; font-size: 17px;
+  }
+  #legend { left: 10px; bottom: 10px; flex-wrap: wrap; gap: 8px; max-width: 70vw; }
+  .sos-card { width: calc(100vw - 48px); max-width: 340px; margin: 0 16px; }
+  .leaflet-popup-content { font-size: 12px; max-width: 80vw; }
+}

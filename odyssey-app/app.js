@@ -279,19 +279,62 @@ if (typeof module !== "undefined") {
 if (typeof document !== "undefined") (async function () {
   const $ = (id) => document.getElementById(id);
   const load = (p) => fetch(p).then(r => r.json());
-  const [segments, crimes, havens, model, liveSnapshot, manifest] = await Promise.all([
+  const [segments, crimes, havens, model, liveSnapshot, manifest, basemap] = await Promise.all([
     load("data/path_segments.json"), load("data/incidents.json"),
     load("data/safe_havens.json"), load("data/model.json").catch(() => null),
     load("data/live_check.json").catch(() => null),
     load("data/data_manifest.json").catch(() => null),
+    load("data/basemap.geojson").catch(() => null),
   ]);
 
   /* map */
-  const map = L.map("map", { preferCanvas: true }).setView([50.9195, -1.4045], 13);
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-    attribution: '&copy; OpenStreetMap contributors &copy; CARTO | crime data: Police UK (OGL v3)',
-    maxZoom: 19,
-  }).addTo(map);
+  const map = L.map("map", { preferCanvas: true, zoomControl: true }).setView([50.9195, -1.4045], 13);
+  L.control.attribution({ prefix: false })
+    .addAttribution("basemap &copy; OpenStreetMap contributors (ODbL) · crime: Police UK (OGL v3) · search: Nominatim")
+    .addTo(map);
+
+  /* self-contained GeoJSON basemap: no third-party tile server, no API key.
+     Water, parks and rail from the same OSM build that feeds Athena. */
+  const BASE_STYLE = {
+    water: { color: "#16324f", weight: 1.5, fill: true, fillColor: "#101f35", fillOpacity: 0.9 },
+    green: { color: "#16281e", weight: 0, fill: true, fillColor: "#111f18", fillOpacity: 0.9 },
+    rail:  { color: "#262e3a", weight: 2, dashArray: "10 7", fill: false, fillOpacity: 0 },
+  };
+  const basemapLayer = L.layerGroup().addTo(map);
+  if (basemap && basemap.features) {
+    for (const f of basemap.features) {
+      const st = BASE_STYLE[f.properties.kind] || {};
+      const toLL = (c) => [c[1], c[0]];
+      if (f.geometry.type === "Polygon") {
+        const ring = f.geometry.coordinates[0].map(toLL);
+        if (ring.length > 3) L.polygon(ring, st).addTo(basemapLayer);
+      } else if (f.geometry.type === "LineString") {
+        L.polyline(f.geometry.coordinates.map(toLL), st).addTo(basemapLayer);
+      }
+    }
+  }
+
+  /* locate-me control (mobile-first: one tap back to where you are) */
+  const LocateControl = L.Control.extend({
+    onAdd() {
+      const btn = L.DomUtil.create("button", "locate-btn");
+      btn.type = "button";
+      btn.title = "Show my location";
+      btn.setAttribute("aria-label", "Show my location");
+      btn.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3.5"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>';
+      L.DomEvent.on(btn, "click", (e) => {
+        L.DomEvent.stopPropagation(e);
+        if (!navigator.geolocation) return;
+        btn.classList.add("busy");
+        navigator.geolocation.getCurrentPosition(
+          (pos) => { map.setView([pos.coords.latitude, pos.coords.longitude], 16); btn.classList.remove("busy"); },
+          () => { btn.classList.remove("busy"); },
+          { enableHighAccuracy: true, timeout: 10000 });
+      });
+      return btn;
+    },
+  });
+  new LocateControl({ position: "topleft" }).addTo(map);
 
   const COLORS = { low: "#10b981", medium: "#f59e0b", high: "#ef4444", unknown: "#5b6673" };
   const segLayer = L.layerGroup().addTo(map);
