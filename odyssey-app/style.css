@@ -20,6 +20,10 @@ html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; backgr
 }
 #panel h1 { margin: 0; font-size: 26px; letter-spacing: 0.5px; }
 .tagline { margin: 4px 0 18px; color: var(--muted); font-size: 13px; }
+.app-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.app-brand h1 { flex: none; line-height: 0; }
+.odyssey-logo { display: block; width: 100px; height: 100px; object-fit: contain; }
+.app-brand .tagline { margin: 0; line-height: 1.4; }
 label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
 select, input[type="datetime-local"] {
   width: 100%; padding: 8px; background: var(--bg); color: var(--text);
@@ -141,7 +145,8 @@ button { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
   }
   #map { flex: 1; min-height: 54vh; }
   #panel h1 { font-size: 22px; }
-  .tagline { font-size: 12px; margin-bottom: 12px; }
+  .odyssey-logo { width: 82px; height: 82px; }
+  .app-brand .tagline { font-size: 12px; }
   #plan { min-height: 50px; font-size: 16px; margin-top: 10px; }
   .route-actions a, .route-actions button { padding: 13px 7px; }
   #sos-open {

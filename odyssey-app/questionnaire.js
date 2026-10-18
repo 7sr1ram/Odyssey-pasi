@@ -221,7 +221,10 @@
     modal = h("div", { id: "prefs-modal", role: "dialog", "aria-modal": "true", "aria-labelledby": "pm-title" },
       h("div", { class: "pm-card" },
         h("div", { class: "pm-head" },
-          h("div", { class: "pm-head-row" }, h("p", { class: "pm-step" }, mode === "wizard" ? "Route preferences" : "Settings"),
+          h("div", { class: "pm-head-row" },
+            h("div", { class: "pm-brand" },
+              h("img", { class: "athena-mark", src: "athena-logo.png", alt: "" }),
+              h("p", { class: "pm-step" }, mode === "wizard" ? "Athena · Route preferences" : "Athena · Settings")),
             h("div", { class: "pm-head-actions" }, sos, close)),
           mode === "settings" ? h("h2", { id: "pm-title", class: "pm-title", tabindex: "-1" }, "Route preferences") : null),
         body, foot));
@@ -317,7 +320,10 @@
     const el = document.getElementById("prefs-card");
     if (!el) return;
     const set = savedOnDevice || sessionSet;
-    el.replaceChildren(h("div", { class: "pc-head" }, h("h2", {}, "Your route preferences")));
+    el.replaceChildren(h("div", { class: "pc-head" },
+      h("div", { class: "pc-brand" },
+        h("img", { class: "athena-mark", src: "athena-logo.png", alt: "" }),
+        h("h2", {}, "Your route preferences"))));
     if (set) {
       const items = P.summarise(current);
       if (items.length) {

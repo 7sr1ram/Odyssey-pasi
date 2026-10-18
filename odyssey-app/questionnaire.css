@@ -18,6 +18,9 @@
 }
 .pc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
 .pc-head h2 { margin: 0; font-size: 14px; }
+.pc-brand, .pm-brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.athena-mark { display: block; width: 32px; height: 32px; flex: none; object-fit: contain; }
+.pm-brand .athena-mark { width: 36px; height: 36px; }
 .pc-chips { list-style: none; margin: 6px 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
 .pc-chips li {
   padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px;
